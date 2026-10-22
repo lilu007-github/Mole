@@ -143,8 +143,7 @@ struct DoctorView: View {
         case let .page(page):
             Button("前往\(page.title)") {
                 UserDefaults.standard.set(page.rawValue, forKey: "lastPage")
-                openWindow(id: "main")
-                NSApp.activate(ignoringOtherApps: true)
+                MainWindow.show(openWindow)
             }
         case let .settings(url):
             Button("打开系统设置") { NSWorkspace.shared.open(url) }
@@ -199,6 +198,16 @@ struct ToolCommands: Commands {
             Divider()
             Link("Mole CLI 文档", destination: URL(string: "https://github.com/tw93/Mole#readme")!)
             Link("报告 Mole CLI 的问题（仅限命令行本身）", destination: URL(string: "https://github.com/tw93/Mole/issues")!)
+        }
+        CommandGroup(before: .windowList) {
+            ForEach(Array(SidebarItem.allCases.prefix(9).enumerated()), id: \.offset) { index, page in
+                Button(page.title) {
+                    UserDefaults.standard.set(page.rawValue, forKey: "lastPage")
+                    MainWindow.show(openWindow)
+                }
+                .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+            }
+            Divider()
         }
         CommandMenu("工具") {
             Menu("清洁屏幕") {

@@ -35,6 +35,7 @@ struct BurrowApp: App {
 /// app so it gets a Dock icon and keyboard focus when launched outside a bundle.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppSettings.applyAppearance()
         DockIcon.apply(hidden: UserDefaults.standard.bool(forKey: MenuBarSettings.hideDockKey)
             && UserDefaults.standard.object(forKey: MenuBarSettings.showKey) as? Bool != false)
         NSApp.activate(ignoringOtherApps: true)
@@ -42,6 +43,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// With the menu bar item on, closing the window keeps Burrow running there.
+    /// Set by the menu bar panel's 退出 so a real quit always goes through.
+    static var quitRequested = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let closeInstead = UserDefaults.standard.bool(forKey: AppSettings.commandQClosesKey)
+            && UserDefaults.standard.object(forKey: MenuBarSettings.showKey) as? Bool != false
+        guard closeInstead, !Self.quitRequested else { return .terminateNow }
+        NSApp.windows.filter { $0.isVisible && $0.styleMask.contains(.titled) }.forEach { $0.close() }
+        return .terminateCancel
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         UserDefaults.standard.object(forKey: MenuBarSettings.showKey) as? Bool == false
     }

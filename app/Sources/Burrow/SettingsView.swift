@@ -8,6 +8,8 @@ struct SettingsView: View {
     @AppStorage(MenuBarSettings.metricKey) private var metricRaw = MenuBarMetric.saved.rawValue
     @AppStorage(MenuBarSettings.hideDockKey) private var hideDock = false
     @AppStorage(GlobalShortcuts.enabledKey) private var shortcutsEnabled = false
+    @AppStorage(AppSettings.commandQClosesKey) private var commandQCloses = false
+    @AppStorage(AppSettings.appearanceKey) private var appearance = AppSettings.Appearance.system.rawValue
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
     @State private var loginError: String?
     @State private var shortcutsRegistered = 0
@@ -49,6 +51,12 @@ struct SettingsView: View {
                 if let loginError {
                     Text(loginError).font(.caption).foregroundStyle(.orange)
                 }
+                Picker("外观", selection: $appearance) {
+                    ForEach(AppSettings.Appearance.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .onChange(of: appearance) { AppSettings.applyAppearance() }
+                Toggle("⌘Q 只关闭窗口，Burrow 留在菜单栏", isOn: $commandQCloses)
+                    .disabled(!showMenuBar)
                 Toggle("启用全局快捷键", isOn: $shortcutsEnabled)
                     .onChange(of: shortcutsEnabled) {
                         GlobalShortcuts.shared.apply()

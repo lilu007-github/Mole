@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Carbon.HIToolbox
 import ServiceManagement
 
@@ -129,5 +130,39 @@ enum DockIcon {
     static func apply(hidden: Bool) {
         NSApp.setActivationPolicy(hidden ? .accessory : .regular)
         if !hidden { NSApp.activate(ignoringOtherApps: true) }
+    }
+}
+
+enum AppSettings {
+    static let commandQClosesKey = "commandQClosesToMenuBar"
+    static let appearanceKey = "appearance"
+
+    enum Appearance: String, CaseIterable, Identifiable {
+        case system, light, dark
+        var id: String { rawValue }
+        var title: String { self == .system ? "跟随系统" : self == .light ? "浅色" : "深色" }
+    }
+
+    static func applyAppearance() {
+        let raw = UserDefaults.standard.string(forKey: appearanceKey) ?? Appearance.system.rawValue
+        switch Appearance(rawValue: raw) ?? .system {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+/// Brings the existing main window forward instead of opening a second one
+/// (SwiftUI's openWindow always creates a new WindowGroup window).
+enum MainWindow {
+    @MainActor
+    static func show(_ openWindow: OpenWindowAction) {
+        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true && $0.isVisible }) {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "main")
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

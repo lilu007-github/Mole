@@ -152,7 +152,19 @@ struct StatusView: View {
             }
             .font(.title3.weight(.semibold).monospacedDigit())
             NetworkChart(samples: history)
-            Text(net.map { "\($0.name) · \($0.ip ?? "")" } ?? "无活动网络").detailStyle()
+            HStack {
+                Text(net.map { "\($0.name) · \($0.ip ?? "")" } ?? "无活动网络").detailStyle()
+                if let ip = net?.ip, !ip.isEmpty {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(ip, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("拷贝 IP 地址")
+                }
+            }
         }
     }
 

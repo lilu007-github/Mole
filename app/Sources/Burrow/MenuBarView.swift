@@ -114,12 +114,14 @@ struct MenuBarView: View {
             Divider()
             HStack {
                 Button("打开 Burrow") {
-                    openWindow(id: "main")
-                    NSApp.activate(ignoringOtherApps: true)
+                    MainWindow.show(openWindow)
                 }
                 Spacer()
                 SettingsLink { Image(systemName: "gearshape") }
-                Button("退出") { NSApp.terminate(nil) }
+                Button("退出") {
+                    AppDelegate.quitRequested = true
+                    NSApp.terminate(nil)
+                }
             }
         }
         .padding(14)
