@@ -50,7 +50,7 @@ struct CleanView: View {
             Spacer()
             Button("外置磁盘…") { cleaningExternal = true }.disabled(session.isRunning)
             Button("白名单…") { editingWhitelist = true }.disabled(session.isRunning)
-            Toggle("原始输出", isOn: $showRaw).toggleStyle(.switch).controlSize(.small)
+            Toggle("原始输出", isOn: $showRaw).toggleStyle(.switch).controlSize(.small).fixedSize()
             if session.isRunning {
                 ProgressView().controlSize(.small)
                 Button("停止") { session.terminate() }
