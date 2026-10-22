@@ -27,6 +27,32 @@ enum ToolChecks {
             expect(TouchIDSudo.parse("Run Mole without sudo") == .unknown, "anything else")
         }
 
+        Checks.add("touchid", "a password sent at a Password: prompt arrives unchanged") {
+            // Stands in for `echo … | sudo tee`: stdin is a pipe, so the password is read
+            // from /dev/tty with echo off, as sudo does; then print what arrived.
+            let dir = makeFixtureDir("fake-sudo")
+            let script = dir.appendingPathComponent("fake-sudo")
+            try """
+            #!/bin/bash
+            echo data | {
+                stty -echo < /dev/tty; printf 'Password:' > /dev/tty
+                IFS= read -r p < /dev/tty; stty echo < /dev/tty; echo
+                printf 'GOT[%s]\\n' "$p"
+            }
+            """.write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+            let session = TerminalSession()
+            session.start([], usePTY: true, executable: script)
+            let end = Date().addingTimeInterval(10)
+            while !session.currentLine.hasSuffix("Password:"), Date() < end { try await Task.sleep(for: .milliseconds(20)) }
+            expect(session.currentLine.hasSuffix("Password:"), "prompt: \(session.allLines)")
+            let password = #"Ab1 !@#$%^&*()-_=+[]{};:'",.<>/?\|`~"#
+            session.send(password + "\r")
+            await LiveChecks.waitForExit(session, seconds: 10)
+            expect(session.allLines.contains("GOT[\(password)]"), "\(session.allLines)")
+        }
+
         Checks.add("touchid", "status reads the real mo touchid output", live: true) {
             expect(await TouchIDSudo.status() != .unknown, "mo touchid status gave no known line")
         }

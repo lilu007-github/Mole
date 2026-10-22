@@ -33,12 +33,22 @@ struct PromptBar: View {
         return passwordSentAt.map { session.lineSerial > $0 } ?? true
     }
 
+    /// sudo prints "Sorry, try again." after a wrong password, then asks again.
+    private var lastPasswordRejected: Bool {
+        session.lines.last(where: { !$0.isEmpty })?.contains("Sorry, try again") == true
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if awaitingPassword {
+                if lastPasswordRejected {
+                    Label("密码不对。请输入这台 Mac 的登录密码（不是 Apple 账户密码），注意大写锁定。",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
                 HStack {
                     Image(systemName: "lock.fill").foregroundStyle(.secondary)
-                    SecureField("需要管理员密码（也可以用 Touch ID）", text: $password)
+                    SecureField("这台 Mac 的登录密码", text: $password)
                         .onSubmit(sendPassword)
                     Button("提交", action: sendPassword).disabled(password.isEmpty)
                 }
