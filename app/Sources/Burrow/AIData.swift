@@ -91,9 +91,11 @@ struct AISession: Identifiable, Hashable {
 }
 
 enum AISessionScanner {
-    static var claudeRoot: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.claude/projects") }
+    /// The home folder to scan; checks point it at a fixture.
+    nonisolated(unsafe) static var home = NSHomeDirectory()
+    static var claudeRoot: URL { URL(fileURLWithPath: home + "/.claude/projects") }
     static var codexRoots: [URL] {
-        ["/.codex/sessions", "/.codex/archived_sessions"].map { URL(fileURLWithPath: NSHomeDirectory() + $0) }
+        ["/.codex/sessions", "/.codex/archived_sessions"].map { URL(fileURLWithPath: home + $0) }
     }
 
     /// Conversations whose transcript and companions were all last modified before `cutoff`.
@@ -207,7 +209,7 @@ enum AISessionScanner {
 
     /// id → thread name from ~/.codex/session_index.jsonl.
     private static func codexTitles() -> [String: String] {
-        let url = URL(fileURLWithPath: NSHomeDirectory() + "/.codex/session_index.jsonl")
+        let url = URL(fileURLWithPath: home + "/.codex/session_index.jsonl")
         var titles: [String: String] = [:]
         for line in jsonLines(url, limit: 4 * 1024 * 1024) {
             if let id = line["id"] as? String, let name = line["thread_name"] as? String { titles[id] = name }
@@ -239,14 +241,19 @@ enum AISessionScanner {
     }
 
     // MARK: File facts
+    //
+    // URL caches resource values per instance, so a URL kept since the scan would
+    // report the scan-time modification date. Every check reads through a fresh URL.
+
+    private static func fresh(_ url: URL) -> URL { URL(fileURLWithPath: url.path) }
 
     static func isRegularFile(_ url: URL) -> Bool {
-        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        let values = try? fresh(url).resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         return values?.isRegularFile == true && values?.isSymbolicLink != true
     }
 
     static func isRealDirectory(_ url: URL) -> Bool {
-        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        let values = try? fresh(url).resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         return values?.isDirectory == true && values?.isSymbolicLink != true
     }
 
@@ -254,7 +261,7 @@ enum AISessionScanner {
     static func newestModification(_ urls: [URL]) -> Date {
         var newest = Date.distantPast
         for url in urls {
-            for item in [url] + descendants(url) {
+            for item in [fresh(url)] + descendants(url) {
                 if let date = try? item.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                    date > newest { newest = date }
             }
@@ -265,7 +272,7 @@ enum AISessionScanner {
     static func allocatedSize(_ urls: [URL]) -> Int64 {
         var total: Int64 = 0
         for url in urls {
-            for item in [url] + descendants(url) {
+            for item in [fresh(url)] + descendants(url) {
                 let size = try? item.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize
                 total += Int64(size ?? 0)
             }
@@ -291,6 +298,11 @@ enum AISessionTrash {
         var freed: Int64 { moved.reduce(0) { $0 + $1.size } }
     }
 
+    /// Moves one item to the Trash; checks swap in a fixture folder.
+    nonisolated(unsafe) static var mover: (URL) throws -> Void = {
+        try FileManager.default.trashItem(at: $0, resultingItemURL: nil)
+    }
+
     static func trash(_ sessions: [AISession], cutoff: Date) -> Outcome {
         var outcome = Outcome()
         let log = OperationLog(command: "burrow-ai")
@@ -306,7 +318,7 @@ enum AISessionTrash {
             for url in [session.file] + session.companions {
                 let kb = AISessionScanner.allocatedSize([url]) / 1024
                 do {
-                    try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                    try mover(url)
                     log.entry("TRASHED", url.path, detail: "\(kb)KB")
                     movedKB += kb
                 } catch {
@@ -358,7 +370,7 @@ struct OperationLog {
     let command: String
     private let runID: String
     /// Mole's log; tests point this elsewhere.
-    static var fileURL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/mole/operations.log")
+    nonisolated(unsafe) static var fileURL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/mole/operations.log")
     private var url: URL { Self.fileURL }
 
     init(command: String) {

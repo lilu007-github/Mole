@@ -25,6 +25,20 @@ final class StatusMonitor {
 
     static let historyLimit = 120
 
+    /// The interface with an IP in this snapshot; otherwise the previous one
+    /// (or the system's primary interface) at zero rate, since it was dropped
+    /// only for moving no bytes during the sample.
+    static func activeNetwork(in snapshot: StatusSnapshot, previous: StatusSnapshot.Network?,
+                              primary: () -> StatusSnapshot.Network?) -> StatusSnapshot.Network? {
+        if let current = snapshot.network?.first(where: { !($0.ip ?? "").isEmpty }) {
+            return current
+        }
+        guard var idle = previous ?? primary() else { return nil }
+        idle.rxRateMbs = 0
+        idle.txRateMbs = 0
+        return idle
+    }
+
     private var interval: Duration { liveViewers > 0 ? .seconds(3) : .seconds(10) }
 
     func start() {
@@ -54,14 +68,8 @@ final class StatusMonitor {
         do {
             let next = try await MoleCLI.json(["status", "--json"], as: StatusSnapshot.self)
             snapshot = next
-            if let current = next.network?.first(where: { !($0.ip ?? "").isEmpty }) {
-                activeNetwork = current
-            } else if var idle = activeNetwork ?? PrimaryInterface.current() {
-                // Dropped from the list only because it moved no bytes in this sample.
-                idle.rxRateMbs = 0
-                idle.txRateMbs = 0
-                activeNetwork = idle
-            }
+            activeNetwork = Self.activeNetwork(in: next, previous: activeNetwork,
+                                               primary: PrimaryInterface.current)
             history.append(StatusSample(next, network: activeNetwork))
             if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }
             error = nil

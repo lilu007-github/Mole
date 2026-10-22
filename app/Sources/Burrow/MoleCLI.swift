@@ -9,11 +9,14 @@ enum MoleCLI {
     static let terminalColumns = 110
     static let terminalRows = 40
 
-    /// Resolution order: user setting, the CLI bundled in Burrow.app, then the
-    /// usual install locations (for `swift run` during development).
+    /// Resolution order: the MOLE_PATH environment variable, the user setting,
+    /// the CLI bundled in Burrow.app, then the usual install locations.
     static var executableURL: URL? {
         let fm = FileManager.default
         var candidates: [String] = []
+        if let forced = ProcessInfo.processInfo.environment["MOLE_PATH"], !forced.isEmpty {
+            candidates.append(forced)
+        }
         if let custom = UserDefaults.standard.string(forKey: pathDefaultsKey), !custom.isEmpty {
             candidates.append((custom as NSString).expandingTildeInPath)
         }

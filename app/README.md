@@ -19,6 +19,31 @@ this checkout bundled in `Contents/Resources/mole`: the `mole` script, `bin/`,
 `lib/` and the Go helpers `status-go` / `analyze-go`. The bundled Mole version is
 shown in Settings (⌘,). To use a different Mole, set its path there.
 
+## Checks
+
+```bash
+app/scripts/run-checks.sh            # all checks, about a minute
+app/scripts/run-checks.sh parser     # only checks whose name contains "parser"
+BURROW_SKIP_LIVE=1 app/scripts/run-checks.sh   # skip checks that run the CLI
+```
+
+Command Line Tools ship no test framework, so `run-checks.sh` compiles the app
+sources (minus the `@main` entry) together with `Tests/Checks` into one
+executable. Parsing and AI-cleanup checks use hand-written samples and a fixture
+home folder. Live checks run this checkout's `mole`, only read-only commands and
+`--dry-run`s; Mole records those dry runs in its operation log as usual.
+
+## Keeping up with Mole
+
+```bash
+app/scripts/sync-upstream.sh          # merge tw93/Mole's main, run checks, rebuild
+app/scripts/sync-upstream.sh --push   # same, then push main and this branch
+```
+
+The fork's `main` mirrors upstream; Burrow lives on its own branch in `app/`, so
+merges should not conflict. Run it before building a copy to use, so the bundled
+CLI carries Mole's latest safety fixes.
+
 ## Signing
 
 macOS keeps privacy permissions (App Management, Full Disk Access) per code
