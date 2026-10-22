@@ -43,6 +43,16 @@ enum Notifier {
         }
     }
 
+    static func keepAwakePaused(percent: Int) {
+        guard isEnabled(.keepAwake) else { return }
+        post(Alert(id: "keep-awake", title: "保持常亮已暂停", body: "电量剩余 \(percent)%，接通电源后会自动恢复。"))
+    }
+
+    static func keepAwakeResumed() {
+        guard isEnabled(.keepAwake) else { return }
+        post(Alert(id: "keep-awake", title: "保持常亮已恢复", body: "已接通电源。"))
+    }
+
     static func keepAwakeEnded() {
         guard isEnabled(.keepAwake) else { return }
         post(Alert(id: "keep-awake", title: "保持常亮已结束", body: "已恢复正常的睡眠设置。"))

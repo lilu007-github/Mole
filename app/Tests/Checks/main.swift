@@ -20,6 +20,7 @@ Task { @MainActor in
     TreemapChecks.register()
     IdleChecks.register()
     LiveChecks.register()
+    LiveChecks.registerBattery()
     let status = await Checks.run(filter: CommandLine.arguments.dropFirst().first)
     removeFixtures()
     exit(status)

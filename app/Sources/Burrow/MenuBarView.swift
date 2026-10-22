@@ -205,6 +205,10 @@ struct MenuBarView: View {
                     .controlSize(.small)
                 }
             }
+            Toggle("电量低于 20% 时暂停（接电后恢复）", isOn: Binding(
+                get: { KeepAwake.pausesOnLowBattery },
+                set: { UserDefaults.standard.set($0, forKey: KeepAwake.pauseOnLowBatteryKey) }))
+                .controlSize(.small)
             Toggle("允许屏幕关闭（任务继续运行）", isOn: $allowDisplaySleep)
                 .controlSize(.small)
                 .onChange(of: allowDisplaySleep) { _, allow in

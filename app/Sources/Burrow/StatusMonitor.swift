@@ -72,6 +72,8 @@ final class StatusMonitor {
                                                primary: PrimaryInterface.current)
             history.append(StatusSample(next, network: activeNetwork))
             Notifier.evaluate(next)
+            let battery = next.batteries?.first
+            KeepAwake.shared.batteryChanged(percent: battery?.percent, onPower: KeepAwake.isOnPower(battery?.status))
             if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }
             error = nil
         } catch {

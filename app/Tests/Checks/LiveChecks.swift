@@ -100,6 +100,25 @@ enum LiveChecks {
         }
     }
 
+    static func registerBattery() {
+        Checks.add("live", "keep awake pauses on a low battery and resumes on power", live: true) {
+            let awake = KeepAwake.shared
+            UserDefaults.standard.set(true, forKey: KeepAwake.pauseOnLowBatteryKey)
+            awake.enable(duration: nil, allowDisplaySleep: false)
+            defer { awake.disable() }
+            awake.batteryChanged(percent: 50, onPower: false)
+            let running = try assertions()
+            expect(!awake.pausedForBattery && running.contains("PreventUserIdleDisplaySleep"), "50% keeps going")
+            awake.batteryChanged(percent: 15, onPower: false)
+            let paused = try assertions()
+            expect(awake.pausedForBattery && awake.isActive && paused.isEmpty, "15% on battery pauses: \(paused)")
+            awake.batteryChanged(percent: 15, onPower: true)
+            let resumed = try assertions()
+            expect(!awake.pausedForBattery && resumed.contains("PreventUserIdleDisplaySleep"), "power resumes")
+            expect(KeepAwake.isOnPower("AC") && KeepAwake.isOnPower("Charging") && !KeepAwake.isOnPower("Discharging"), "states")
+        }
+    }
+
     static func assertions() throws -> String {
         let out = try runProcess("/usr/bin/pmset", ["-g", "assertions"])
         return String(decoding: out, as: UTF8.self).split(separator: "\n")
