@@ -122,3 +122,12 @@ enum ProcessControl {
         return nil
     }
 }
+
+/// With the Dock icon hidden Burrow runs as an accessory app: no Dock tile and
+/// no app menu, reachable from the menu bar panel.
+enum DockIcon {
+    static func apply(hidden: Bool) {
+        NSApp.setActivationPolicy(hidden ? .accessory : .regular)
+        if !hidden { NSApp.activate(ignoringOtherApps: true) }
+    }
+}

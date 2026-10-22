@@ -3,22 +3,60 @@ import SwiftUI
 
 enum MenuBarSettings {
     static let showKey = "showMenuBar"
+    /// Older builds stored a Bool for "show network speed"; read once as a fallback.
     static let speedKey = "menuBarShowsSpeed"
+    static let metricKey = "menuBarMetric"
+    static let hideDockKey = "hideDockIcon"
     static let allowDisplaySleepKey = "keepAwakeAllowsDisplaySleep"
 }
 
-/// The menu bar icon: a cup while keep-awake is on, optional network speed.
+/// What the menu bar icon shows next to it.
+enum MenuBarMetric: String, CaseIterable, Identifiable {
+    case none, cpu, memory, network, battery
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: "只显示图标"
+        case .cpu: "CPU"
+        case .memory: "内存"
+        case .network: "网速"
+        case .battery: "电池"
+        }
+    }
+
+    static var saved: MenuBarMetric {
+        if let raw = UserDefaults.standard.string(forKey: MenuBarSettings.metricKey), let metric = MenuBarMetric(rawValue: raw) {
+            return metric
+        }
+        return UserDefaults.standard.bool(forKey: MenuBarSettings.speedKey) ? .network : .none
+    }
+
+    /// The short text for the menu bar, or nil when nothing should show.
+    func text(_ snapshot: StatusSnapshot?, network: StatusSnapshot.Network?) -> String? {
+        switch self {
+        case .none: return nil
+        case .cpu: return snapshot?.cpu?.usage.map { "CPU \(Int($0.rounded()))%" }
+        case .memory: return snapshot?.memory?.usedPercent.map { "内存 \(Int($0.rounded()))%" }
+        case .battery: return snapshot?.batteries?.first?.percent.map { "\(Int($0))%" }
+        case .network:
+            guard let network else { return nil }
+            return "↓\(MenuBarLabel.compact(network.rxRateMbs)) ↑\(MenuBarLabel.compact(network.txRateMbs))"
+        }
+    }
+}
+
+/// The menu bar icon: a cup while keep-awake is on, plus the chosen metric.
 struct MenuBarLabel: View {
-    @AppStorage(MenuBarSettings.speedKey) private var showSpeed = false
+    @AppStorage(MenuBarSettings.metricKey) private var metricRaw = MenuBarMetric.saved.rawValue
     private let monitor = StatusMonitor.shared
     private let keepAwake = KeepAwake.shared
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: keepAwake.isActive ? "cup.and.saucer.fill" : "hare")
-            if showSpeed, let net = monitor.activeNetwork {
-                Text("↓\(Self.compact(net.rxRateMbs)) ↑\(Self.compact(net.txRateMbs))")
-                    .monospacedDigit()
+            if let text = (MenuBarMetric(rawValue: metricRaw) ?? .none).text(monitor.snapshot, network: monitor.activeNetwork) {
+                Text(text).monospacedDigit()
             }
         }
         .task { monitor.start() }
@@ -35,6 +73,7 @@ struct MenuBarLabel: View {
 struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(MenuBarSettings.allowDisplaySleepKey) private var allowDisplaySleep = false
+    @State private var ejectError: String?
     private let monitor = StatusMonitor.shared
     private let keepAwake = KeepAwake.shared
 
@@ -47,6 +86,7 @@ struct MenuBarView: View {
             }
             Divider()
             keepAwakeSection
+            ejectSection
             Divider()
             HStack(spacing: 8) {
                 Menu {
@@ -109,6 +149,35 @@ struct MenuBarView: View {
                 }
                 .font(.callout.monospacedDigit())
             }
+        }
+    }
+
+    /// External drives with an eject button; hidden when none are mounted.
+    @ViewBuilder
+    private var ejectSection: some View {
+        let volumes = ExternalCleanSheet.mountedVolumes()
+        if !volumes.isEmpty {
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Label("外置磁盘", systemImage: "externaldrive")
+                ForEach(volumes) { volume in
+                    HStack {
+                        Text(volume.name).lineLimit(1)
+                        Spacer()
+                        Button("推出") { eject(volume) }.controlSize(.small)
+                    }
+                }
+                if let ejectError { Text(ejectError).font(.caption).foregroundStyle(.orange) }
+            }
+        }
+    }
+
+    private func eject(_ volume: ExternalCleanSheet.Volume) {
+        do {
+            try NSWorkspace.shared.unmountAndEjectDevice(at: volume.url)
+            ejectError = nil
+        } catch {
+            ejectError = "无法推出 \(volume.name)：可能有 App 正在使用它。"
         }
     }
 

@@ -5,7 +5,8 @@ struct SettingsView: View {
     @AppStorage(MoleCLI.pathDefaultsKey) private var molePath = ""
     @State private var version = ""
     @AppStorage(MenuBarSettings.showKey) private var showMenuBar = true
-    @AppStorage(MenuBarSettings.speedKey) private var showSpeed = false
+    @AppStorage(MenuBarSettings.metricKey) private var metricRaw = MenuBarMetric.saved.rawValue
+    @AppStorage(MenuBarSettings.hideDockKey) private var hideDock = false
     @AppStorage(GlobalShortcuts.enabledKey) private var shortcutsEnabled = false
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
     @State private var loginError: String?
@@ -75,7 +76,13 @@ struct SettingsView: View {
             }
             Section("菜单栏") {
                 Toggle("在菜单栏显示 Burrow", isOn: $showMenuBar)
-                Toggle("在菜单栏显示网速", isOn: $showSpeed).disabled(!showMenuBar)
+                Picker("菜单栏图标旁显示", selection: $metricRaw) {
+                    ForEach(MenuBarMetric.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .disabled(!showMenuBar)
+                Toggle("隐藏 Dock 图标（只留在菜单栏）", isOn: $hideDock)
+                    .disabled(!showMenuBar)
+                    .onChange(of: hideDock) { _, hide in DockIcon.apply(hidden: hide) }
                 Text("开启时，关闭窗口后 Burrow 会继续留在菜单栏；要退出请在菜单栏面板里点「退出」。")
                     .font(.caption)
                     .foregroundStyle(.secondary)

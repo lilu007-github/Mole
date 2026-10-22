@@ -35,7 +35,8 @@ struct BurrowApp: App {
 /// app so it gets a Dock icon and keyboard focus when launched outside a bundle.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        DockIcon.apply(hidden: UserDefaults.standard.bool(forKey: MenuBarSettings.hideDockKey)
+            && UserDefaults.standard.object(forKey: MenuBarSettings.showKey) as? Bool != false)
         NSApp.activate(ignoringOtherApps: true)
         MainActor.assumeIsolated { GlobalShortcuts.shared.apply() }
     }
