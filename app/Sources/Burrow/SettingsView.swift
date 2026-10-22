@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage(Notifier.Kind.diskSpace.rawValue) private var notifyDisk = false
     @AppStorage(Notifier.Kind.bluetoothBattery.rawValue) private var notifyBluetooth = false
     @AppStorage(Notifier.Kind.keepAwake.rawValue) private var notifyKeepAwake = false
+    @AppStorage(Notifier.Kind.privacy.rawValue) private var notifyPrivacy = false
 
     var body: some View {
         Form {
@@ -76,10 +77,11 @@ struct SettingsView: View {
                 Toggle(Notifier.Kind.diskSpace.title + "（少于 10 GB）", isOn: $notifyDisk)
                 Toggle(Notifier.Kind.bluetoothBattery.title + "（低于 20%）", isOn: $notifyBluetooth)
                 Toggle(Notifier.Kind.keepAwake.title, isOn: $notifyKeepAwake)
+                Toggle(Notifier.Kind.privacy.title, isOn: $notifyPrivacy)
                 Text("同一件事一天最多提醒一次。需要 Burrow 在运行（窗口关闭后留在菜单栏即可）。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            .onChange(of: notifyDisk || notifyBluetooth || notifyKeepAwake) { _, any in
+            .onChange(of: notifyDisk || notifyBluetooth || notifyKeepAwake || notifyPrivacy) { _, any in
                 if any { Notifier.requestPermission() }
             }
             Section("菜单栏") {

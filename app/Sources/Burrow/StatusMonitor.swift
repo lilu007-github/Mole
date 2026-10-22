@@ -16,6 +16,8 @@ final class StatusMonitor {
     /// `mo status --json` caps the list at three interfaces sorted by traffic,
     /// so an idle Wi-Fi can drop out of a single sample.
     private(set) var activeNetwork: StatusSnapshot.Network?
+    /// Camera and microphone in use, refreshed with every sample.
+    private(set) var privacy = PrivacyMonitor.State()
     /// Recent samples for the charts, oldest first.
     private(set) var history: [StatusSample] = []
     private(set) var error: String?
@@ -72,6 +74,9 @@ final class StatusMonitor {
                                                primary: PrimaryInterface.current)
             history.append(StatusSample(next, network: activeNetwork))
             Notifier.evaluate(next)
+            let nowPrivacy = PrivacyMonitor.current()
+            Notifier.privacyChanged(from: privacy, to: nowPrivacy)
+            privacy = nowPrivacy
             let battery = next.batteries?.first
             KeepAwake.shared.batteryChanged(percent: battery?.percent, onPower: KeepAwake.isOnPower(battery?.status))
             if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }

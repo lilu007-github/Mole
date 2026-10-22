@@ -9,12 +9,14 @@ enum Notifier {
         case diskSpace = "notifyDiskSpace"
         case bluetoothBattery = "notifyBluetoothBattery"
         case keepAwake = "notifyKeepAwake"
+        case privacy = "notifyPrivacy"
 
         var title: String {
             switch self {
             case .diskSpace: "启动磁盘空间不足时提醒"
             case .bluetoothBattery: "蓝牙设备电量低时提醒"
             case .keepAwake: "保持常亮结束时提醒"
+            case .privacy: "摄像头或麦克风开始使用时提醒"
             }
         }
     }
@@ -41,6 +43,12 @@ enum Notifier {
             lastSent[alert.id] = Date()
             post(alert)
         }
+    }
+
+    static func privacyChanged(from old: PrivacyMonitor.State, to new: PrivacyMonitor.State) {
+        guard isEnabled(.privacy) else { return }
+        if new.camera && !old.camera { post(Alert(id: "camera", title: "摄像头正在使用", body: "有 App 打开了摄像头。")) }
+        if new.microphone && !old.microphone { post(Alert(id: "mic", title: "麦克风正在使用", body: "有 App 打开了麦克风。")) }
     }
 
     static func keepAwakePaused(percent: Int) {

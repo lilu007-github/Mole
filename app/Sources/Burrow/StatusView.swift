@@ -65,8 +65,11 @@ struct StatusView: View {
                 HStack(spacing: 6) {
                     ForEach(chips(s), id: \.self) { Chip(text: $0) }
                 }
-                if let uptime = s.uptime {
-                    Text("已运行 \(uptime) · \(s.procs ?? 0) 个进程").foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    if let uptime = s.uptime {
+                        Text("已运行 \(uptime) · \(s.procs ?? 0) 个进程").foregroundStyle(.secondary)
+                    }
+                    PrivacyBadges(state: monitor.privacy)
                 }
             }
             Spacer()
@@ -447,5 +450,20 @@ private struct CoreBars: View {
 private extension Text {
     func detailStyle() -> some View {
         font(.callout).foregroundStyle(.secondary).lineLimit(2)
+    }
+}
+
+/// Camera and microphone use, as macOS shows with its orange and green dots.
+struct PrivacyBadges: View {
+    let state: PrivacyMonitor.State
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(state.camera ? "摄像头使用中" : "摄像头未使用", systemImage: state.camera ? "video.fill" : "video.slash")
+                .foregroundStyle(state.camera ? Color.green : Color.secondary)
+            Label(state.microphone ? "麦克风使用中" : "麦克风未使用", systemImage: state.microphone ? "mic.fill" : "mic.slash")
+                .foregroundStyle(state.microphone ? Color.orange : Color.secondary)
+        }
+        .font(.caption)
     }
 }

@@ -136,6 +136,7 @@ struct MenuBarView: View {
                 Text("\(s.healthScore ?? 0)").font(.system(size: 28, weight: .bold, design: .rounded))
                 Text(s.healthScoreMsg ?? "").foregroundStyle(.secondary).lineLimit(1)
             }
+            PrivacyBadges(state: monitor.privacy)
             MiniMeter(title: "CPU", percent: s.cpu?.usage)
             MiniMeter(title: "内存", percent: s.memory?.usedPercent)
             if let disk = s.disks?.first(where: { $0.mount == "/" }) {
