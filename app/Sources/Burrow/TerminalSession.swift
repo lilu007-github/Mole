@@ -28,7 +28,8 @@ final class TerminalSession {
         currentLine.isEmpty ? lines : lines + [currentLine]
     }
 
-    func start(_ arguments: [String], usePTY: Bool) {
+    /// - Parameter columns: terminal width; wider for menus that shorten long paths.
+    func start(_ arguments: [String], usePTY: Bool, columns: Int = MoleCLI.terminalColumns) {
         guard !isRunning, let mo = MoleCLI.executableURL else { return }
         lines = []
         currentLine = ""
@@ -42,13 +43,15 @@ final class TerminalSession {
             // A fixed window size keeps Mole's column layout stable.
             process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
             process.arguments = ["-q", "/dev/null", "/bin/bash", "-c",
-                                 "stty cols \(MoleCLI.terminalColumns) rows \(MoleCLI.terminalRows) 2>/dev/null; exec \"$0\" \"$@\"",
+                                 "stty cols \(columns) rows \(MoleCLI.terminalRows) 2>/dev/null; exec \"$0\" \"$@\"",
                                  mo.path] + arguments
         } else {
             process.executableURL = mo
             process.arguments = arguments
         }
-        process.environment = MoleCLI.environment
+        var environment = MoleCLI.environment
+        environment["COLUMNS"] = String(columns)
+        process.environment = environment
 
         let input = Pipe()
         let output = Pipe()

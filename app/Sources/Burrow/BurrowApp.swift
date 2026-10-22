@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case status, analyze, clean, ai, optimize, installer, uninstall, history
+    case status, analyze, clean, ai, purge, optimize, installer, uninstall, history
 
     var id: String { rawValue }
 
@@ -52,6 +52,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .analyze: "磁盘分析"
         case .clean: "清理"
         case .ai: "AI 数据"
+        case .purge: "构建产物"
         case .optimize: "优化"
         case .installer: "安装包"
         case .uninstall: "卸载应用"
@@ -65,6 +66,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .analyze: "chart.pie"
         case .clean: "sparkles"
         case .ai: "brain"
+        case .purge: "hammer"
         case .optimize: "wand.and.stars"
         case .installer: "shippingbox"
         case .uninstall: "trash"
@@ -96,6 +98,7 @@ struct ContentView: View {
                 case .analyze: AnalyzeView()
                 case .clean: CleanView()
                 case .ai: AIDataView()
+                case .purge: PurgeView()
                 case .optimize: OptimizeView()
                 case .installer: InstallerView()
                 case .uninstall: UninstallView()
