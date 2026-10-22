@@ -6,6 +6,7 @@ struct StatusView: View {
     private let monitor = StatusMonitor.shared
     @State private var quitting: (process: StatusSnapshot.Process, force: Bool)?
     @State private var quitMessage: String?
+    @State private var inspecting: StatusSnapshot.Process?
 
     var body: some View {
         ScrollView {
@@ -271,6 +272,8 @@ struct StatusView: View {
             .frame(height: 220)
             .contextMenu(forSelectionType: StatusSnapshot.Process.ID.self) { ids in
                 if let process = processes.first(where: { ids.contains($0.id) }) {
+                    Button("详情…") { inspecting = process }
+                    Divider()
                     Button("退出 \(process.name)") { quitting = (process, false) }
                         .disabled(ProcessControl.refusal(pid: process.pid, name: process.name) != nil)
                     Button("强制退出 \(process.name)") { quitting = (process, true) }
@@ -286,8 +289,9 @@ struct StatusView: View {
                 Text(quitMessage).font(.caption).foregroundStyle(.secondary)
             }
         } label: {
-            Label("占用最高的进程（右键可退出）", systemImage: "list.number")
+            Label("占用最高的进程（右键查看详情或退出）", systemImage: "list.number")
         }
+        .sheet(item: $inspecting) { ProcessDetailSheet(process: $0) }
         .confirmationDialog(quitTitle, isPresented: Binding(get: { quitting != nil }, set: { if !$0 { quitting = nil } })) {
             Button(quitting?.force == true ? "强制退出" : "退出", role: .destructive) {
                 guard let target = quitting else { return }

@@ -14,6 +14,7 @@ Task { @MainActor in
     ExternalChecks.register()
     UpdateChecks.register()
     StartupChecks.register()
+    ProcessDetailChecks.register()
     LiveChecks.register()
     let status = await Checks.run(filter: CommandLine.arguments.dropFirst().first)
     removeFixtures()
