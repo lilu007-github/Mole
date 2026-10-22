@@ -9,16 +9,16 @@ enum MoleCLI {
     static let terminalColumns = 110
     static let terminalRows = 40
 
-    /// Resolution order: user setting, the repo checkout recorded at build time,
-    /// then the usual install locations.
+    /// Resolution order: user setting, the CLI bundled in Burrow.app, then the
+    /// usual install locations (for `swift run` during development).
     static var executableURL: URL? {
         let fm = FileManager.default
         var candidates: [String] = []
         if let custom = UserDefaults.standard.string(forKey: pathDefaultsKey), !custom.isEmpty {
             candidates.append((custom as NSString).expandingTildeInPath)
         }
-        if let repo = Bundle.main.object(forInfoDictionaryKey: "MoleRepoPath") as? String {
-            candidates.append(repo + "/mole")
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("mole/mole") {
+            candidates.append(bundled.path)
         }
         candidates += [
             "/opt/homebrew/bin/mo",

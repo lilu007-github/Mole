@@ -24,7 +24,7 @@ struct SettingsView: View {
             } header: {
                 Text("Mole CLI")
             } footer: {
-                Text("Burrow 的所有操作都通过 Mole CLI 完成。自动检测顺序：此设置、构建时记录的仓库、/opt/homebrew/bin/mo、/usr/local/bin/mo、~/.local/bin/mo。")
+                Text("Burrow 的所有操作都通过 Mole CLI 完成，默认使用打包在 App 里的版本（\(Self.bundledVersion)）。留空即可；只有想用另一份 Mole 时才需要填写路径。")
                     .foregroundStyle(.secondary)
             }
             Section("菜单栏") {
@@ -42,6 +42,10 @@ struct SettingsView: View {
             version = data.map { String(decoding: $0, as: UTF8.self) }?
                 .split(separator: "\n").first.map(String.init) ?? ""
         }
+    }
+
+    private static var bundledVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "BundledMoleVersion") as? String ?? "开发模式，未打包"
     }
 
     private func choose() {
