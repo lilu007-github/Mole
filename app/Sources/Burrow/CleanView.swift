@@ -18,6 +18,9 @@ struct CleanView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if !session.isRunning {
+                PermissionBanner(lines: session.allLines).padding([.horizontal, .top], 12)
+            }
             content
         }
         .navigationTitle("清理")

@@ -126,6 +126,7 @@ struct InstallerSheet: View {
             RawOutputView(lines: session.allLines)
                 .frame(minHeight: 320)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
+            PermissionBanner(lines: session.allLines)
             PromptBar(session: session, confirmLabel: "确认删除") { dismiss() }
         }
         .padding(20)

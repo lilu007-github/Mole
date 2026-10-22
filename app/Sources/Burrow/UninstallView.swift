@@ -110,6 +110,7 @@ struct UninstallSheet: View {
             RawOutputView(lines: session.allLines)
                 .frame(minHeight: 320)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
+            PermissionBanner(lines: session.allLines)
             PromptBar(session: session, confirmLabel: job.dryRun ? "继续预览" : "确认卸载") { dismiss() }
         }
         .padding(20)
