@@ -1,8 +1,9 @@
 import SwiftUI
 
 struct StatusView: View {
-    @State private var snapshot: StatusSnapshot?
-    @State private var error: String?
+    private let monitor = StatusMonitor.shared
+    private var snapshot: StatusSnapshot? { monitor.snapshot }
+    private var error: String? { monitor.error }
 
     var body: some View {
         ScrollView {
@@ -17,18 +18,9 @@ struct StatusView: View {
             }
         }
         .navigationTitle("系统状态")
-        .task {
-            // Refresh while the view is on screen; SwiftUI cancels this on disappear.
-            while !Task.isCancelled {
-                do {
-                    snapshot = try await MoleCLI.json(["status", "--json"], as: StatusSnapshot.self)
-                    error = nil
-                } catch {
-                    if snapshot == nil { self.error = error.localizedDescription }
-                }
-                try? await Task.sleep(for: .seconds(3))
-            }
-        }
+        // Live 3-second updates while this page is on screen.
+        .onAppear { monitor.beginLive() }
+        .onDisappear { monitor.endLive() }
     }
 
     private let columns = [GridItem(.adaptive(minimum: 260), spacing: 16)]

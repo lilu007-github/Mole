@@ -4,15 +4,22 @@ import SwiftUI
 @main
 struct BurrowApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @AppStorage(MenuBarSettings.showKey) private var showMenuBar = true
 
     var body: some Scene {
-        WindowGroup("Burrow") {
+        WindowGroup("Burrow", id: "main") {
             ContentView()
                 .frame(minWidth: 900, minHeight: 600)
         }
         Settings {
             SettingsView()
         }
+        MenuBarExtra(isInserted: $showMenuBar) {
+            MenuBarView()
+        } label: {
+            MenuBarLabel()
+        }
+        .menuBarExtraStyle(.window)
     }
 }
 
@@ -24,8 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// With the menu bar item on, closing the window keeps Burrow running there.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        UserDefaults.standard.object(forKey: MenuBarSettings.showKey) as? Bool == false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { KeepAwake.shared.disable() }
     }
 }
 
