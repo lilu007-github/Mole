@@ -41,6 +41,7 @@ struct StatusView: View {
                 powerCard(s, history)
                 if let gpu = s.gpu?.first, let usage = gpu.usage, usage >= 0 { gpuCard(gpu, usage: usage) }
             }
+            IdleProcessesSection()
             bluetoothRow(s.bluetooth ?? [])
             processTable(s.topProcesses ?? [])
         }
