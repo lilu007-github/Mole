@@ -4,6 +4,11 @@ A SwiftUI app for the Mole CLI in this repository. Burrow never deletes files
 itself: every cleanup, uninstall and optimization runs through the bundled `mo`,
 so Mole's protection rules, dry-run previews and operation log all apply.
 
+Burrow is an independent project. It is not affiliated with or endorsed by the
+Mole project or Mole for Mac, and it does not use the Mole name or logo (see
+[TRADEMARK.md](../TRADEMARK.md)). Burrow and the bundled Mole CLI are licensed
+under GPL-3.0 ([LICENSE](../LICENSE)).
+
 ## Features
 
 | Area | What Burrow does | How |
