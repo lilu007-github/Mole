@@ -93,12 +93,12 @@ struct OptimizeView: View {
             List {
                 if !report.summary.isEmpty {
                     Section("摘要") {
-                        ForEach(Array(report.summary.enumerated()), id: \.offset) { Text($0.element) }
+                        ForEach(report.summaryRows, id: \.id) { Text($0.text) }
                     }
                 }
                 ForEach(report.sections) { section in
                     Section(section.title) {
-                        ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
+                        ForEach(section.items) { item in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(item.icon).foregroundStyle(item.color).frame(width: 14)
                                 Text(item.text).textSelection(.enabled)

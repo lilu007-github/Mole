@@ -67,7 +67,7 @@ struct ExternalCleanSheet: View {
                     List {
                         ForEach(report.sections) { section in
                             Section(section.title) {
-                                ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
+                                ForEach(section.items) { item in
                                     HStack(alignment: .top) {
                                         Text(item.icon).foregroundStyle(item.color)
                                         Text(item.text)

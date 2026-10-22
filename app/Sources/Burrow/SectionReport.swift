@@ -2,7 +2,10 @@ import SwiftUI
 
 /// Groups `mo clean` / `mo optimize` output into its "➤ Section" blocks and the closing summary.
 struct SectionReport {
-    struct Item {
+    /// Rows of every section share one List, so ids are unique across sections
+    /// ("section-row"); per-section offsets made all sections show one row's text.
+    struct Item: Identifiable {
+        var id = ""
         var icon: String
         var text: String
 
@@ -25,6 +28,11 @@ struct SectionReport {
     var sections: [Section] = []
     var summary: [String] = []
 
+    /// Summary lines with ids that cannot collide with section rows.
+    var summaryRows: [(id: String, text: String)] {
+        summary.enumerated().map { ("summary-\($0.offset)", $0.element) }
+    }
+
     init(lines: [String]) {
         var inSummary = false
         for raw in lines {
@@ -40,7 +48,9 @@ struct SectionReport {
             } else if !line.isEmpty, raw.hasPrefix("  "), !sections.isEmpty {
                 let icon = String(line.prefix(1))
                 let text = line.dropFirst().trimmingCharacters(in: .whitespaces)
-                sections[sections.count - 1].items.append(Item(icon: icon, text: text))
+                let index = sections.count - 1
+                let id = "\(index)-\(sections[index].items.count)"
+                sections[index].items.append(Item(id: id, icon: icon, text: text))
             }
         }
     }

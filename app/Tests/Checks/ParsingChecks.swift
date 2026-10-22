@@ -83,6 +83,9 @@ enum ParsingChecks {
             expect(report.sections.first?.items.first?.text == "User app cache · 28 items, 2.33GB dry", "item text")
             expect(report.summary.count == 2, "\(report.summary)")
             expect(report.potentialSpace == "11.09GB+", "\(report.potentialSpace ?? "nil")")
+            // One List holds every section, so row ids must not repeat across sections.
+            let ids = report.sections.flatMap { $0.items.map(\.id) } + report.summaryRows.map(\.id)
+            expect(Set(ids).count == ids.count, "duplicate row ids: \(ids)")
         }
         Checks.add("report", "real clean summary reports freed space") {
             let report = SectionReport(lines: ["====", "Cleanup complete", "Space freed: 1.20GB | Items: 12", "===="])
