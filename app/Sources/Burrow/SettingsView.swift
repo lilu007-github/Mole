@@ -6,6 +6,10 @@ struct SettingsView: View {
     @State private var version = ""
     @AppStorage(MenuBarSettings.showKey) private var showMenuBar = true
     @AppStorage(MenuBarSettings.speedKey) private var showSpeed = false
+    @AppStorage(GlobalShortcuts.enabledKey) private var shortcutsEnabled = false
+    @State private var launchAtLogin = LaunchAtLogin.isEnabled
+    @State private var loginError: String?
+    @State private var shortcutsRegistered = 0
 
     var body: some View {
         Form {
@@ -27,6 +31,35 @@ struct SettingsView: View {
                 Text("Burrow 的所有操作都通过 Mole CLI 完成，默认使用打包在 App 里的版本（\(Self.bundledVersion)）。留空即可；只有想用另一份 Mole 时才需要填写路径。")
                     .foregroundStyle(.secondary)
             }
+            Section("通用") {
+                Toggle("登录时自动打开 Burrow", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, on in
+                        do {
+                            try LaunchAtLogin.set(on)
+                            loginError = LaunchAtLogin.needsApproval ? "需要在「系统设置 → 通用 → 登录项」里允许 Burrow。" : nil
+                        } catch {
+                            loginError = "设置失败：\(error.localizedDescription)"
+                            launchAtLogin = LaunchAtLogin.isEnabled
+                        }
+                    }
+                if let loginError {
+                    Text(loginError).font(.caption).foregroundStyle(.orange)
+                }
+                Toggle("启用全局快捷键", isOn: $shortcutsEnabled)
+                    .onChange(of: shortcutsEnabled) {
+                        GlobalShortcuts.shared.apply()
+                        shortcutsRegistered = GlobalShortcuts.shared.registeredCount
+                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(GlobalShortcuts.all, id: \.id) { Text($0.label).monospaced() }
+                    if shortcutsEnabled && shortcutsRegistered < GlobalShortcuts.all.count {
+                        Text("有 \(GlobalShortcuts.all.count - shortcutsRegistered) 个快捷键已被其他 App 占用。")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
             Section("菜单栏") {
                 Toggle("在菜单栏显示 Burrow", isOn: $showMenuBar)
                 Toggle("在菜单栏显示网速", isOn: $showSpeed).disabled(!showMenuBar)
@@ -37,6 +70,10 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 520)
+        .onAppear {
+            launchAtLogin = LaunchAtLogin.isEnabled
+            shortcutsRegistered = GlobalShortcuts.shared.registeredCount
+        }
         .task(id: molePath) {
             let data = try? await MoleCLI.run(["--version"])
             version = data.map { String(decoding: $0, as: UTF8.self) }?
