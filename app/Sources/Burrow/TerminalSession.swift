@@ -17,6 +17,9 @@ final class TerminalSession {
     /// Count of lines ever completed. Unlike `lines.count` it never goes down
     /// when the screen is redrawn, so prompts can tell "new" from "answered".
     private(set) var lineSerial = 0
+    /// Every completed line in order, never cleared by screen redraws. Menus
+    /// that repaint in place are followed through this, not through `lines`.
+    private(set) var transcript: [String] = []
 
     private var process: Process?
     private var inputPipe: Pipe?
@@ -35,6 +38,7 @@ final class TerminalSession {
         currentLine = ""
         exitCode = nil
         lineSerial = 0
+        transcript = []
         parser = TerminalTextParser()
         pendingBytes = Data()
 
@@ -110,6 +114,8 @@ final class TerminalSession {
         pendingBytes = Data(pendingBytes.suffix(from: pendingBytes.startIndex + cut))
         parser.feed(text, lines: &lines, current: &currentLine)
         lineSerial = parser.committed
+        transcript += parser.drainCommitted()
+        if transcript.count > 20000 { transcript.removeFirst(transcript.count - 20000) }
         if lines.count > 4000 { lines.removeFirst(lines.count - 4000) }
     }
 }
@@ -122,6 +128,19 @@ struct TerminalTextParser {
     private var params = ""
     private var pendingCR = false
     private(set) var committed = 0
+    private var committedLines: [String] = []
+
+    /// Lines completed since the last call.
+    mutating func drainCommitted() -> [String] {
+        defer { committedLines = [] }
+        return committedLines
+    }
+
+    private mutating func commit(_ line: String, into lines: inout [String]) {
+        lines.append(line)
+        committedLines.append(line)
+        committed += 1
+    }
 
     mutating func feed(_ text: String, lines: inout [String], current: inout String) {
         for ch in text.unicodeScalars {
@@ -130,9 +149,8 @@ struct TerminalTextParser {
                 if pendingCR {
                     pendingCR = false
                     if ch == "\n" {
-                        lines.append(current)
+                        commit(current, into: &lines)
                         current = ""
-                        committed += 1
                         continue
                     }
                     current = "" // bare \r: the next text overwrites the line
@@ -141,9 +159,8 @@ struct TerminalTextParser {
                 case "\u{1b}": state = .escape
                 case "\r": pendingCR = true
                 case "\n":
-                    lines.append(current)
+                    commit(current, into: &lines)
                     current = ""
-                    committed += 1
                 case "\u{8}": if !current.isEmpty { current.removeLast() }
                 case "\t": current.append("    ")
                 default:

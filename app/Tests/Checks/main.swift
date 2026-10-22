@@ -7,6 +7,7 @@ Task { @MainActor in
     AIChecks.register()
     HistoryChecks.register()
     PurgeChecks.register()
+    UninstallChecks.register()
     LiveChecks.register()
     let status = await Checks.run(filter: CommandLine.arguments.dropFirst().first)
     removeFixtures()
