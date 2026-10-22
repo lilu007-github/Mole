@@ -4,6 +4,7 @@ import SwiftUI
 // MARK: - About
 
 struct AboutView: View {
+    @Environment(\.openWindow) private var openWindow
     @State private var update: UpdateChecker.Result?
     @State private var checking = false
 
@@ -14,6 +15,7 @@ struct AboutView: View {
                 .frame(width: 96, height: 96)
             Text("Burrow").font(.title.bold())
             Text("版本 \(Doctor.burrowVersion())").foregroundStyle(.secondary)
+            Button("更新说明") { openWindow(id: "changelog") }.buttonStyle(.link)
             Text("内置 Mole CLI \(Bundle.main.object(forInfoDictionaryKey: "BundledMoleVersion") as? String ?? "（开发模式，未打包）")")
                 .foregroundStyle(.secondary)
 
@@ -222,6 +224,7 @@ struct ToolCommands: Commands {
                 NotificationCenter.default.post(name: OnboardingView.showNotification, object: nil)
             }
             Button("运行诊断并拷贝报告…") { open("doctor") }
+            Button("Burrow 更新说明") { open("changelog") }
             Divider()
             Link("Mole CLI 文档", destination: URL(string: "https://github.com/tw93/Mole#readme")!)
             Link("报告 Mole CLI 的问题（仅限命令行本身）", destination: URL(string: "https://github.com/tw93/Mole/issues")!)

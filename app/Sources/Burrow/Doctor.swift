@@ -175,11 +175,18 @@ enum Doctor {
         return text.split(whereSeparator: \.isNewline).filter { !$0.hasPrefix("#") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
     }
 
+    static var shortVersion: String? { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String }
+
+    /// "0.3.0（构建 38 · 9b6ec4bd）"; "+local" in the commit means uncommitted app/ changes.
     static func burrowVersion() -> String {
         let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "开发版"
-        let build = info?["CFBundleVersion"] as? String
-        return build.map { "\(version) (\($0))" } ?? version
+        guard let version = shortVersion else { return "开发版" }
+        var details: [String] = []
+        if let build = info?["CFBundleVersion"] as? String { details.append("构建 \(build)") }
+        if let commit = info?["BurrowCommit"] as? String {
+            details.append(commit.replacingOccurrences(of: "+local", with: "，含未提交的修改"))
+        }
+        return details.isEmpty ? version : "\(version)（\(details.joined(separator: " · "))）"
     }
 
     private static func signingSummary() -> String {

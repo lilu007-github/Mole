@@ -54,6 +54,15 @@ cp "$GO_OUT/analyze-go" "$GO_OUT/status-go" "$CLI/bin/"
 cp -R "$REPO_DIR/lib" "$CLI/lib"
 MOLE_VERSION="$("$CLI/mole" --version 2> /dev/null | sed -n 's/^Mole version //p')"
 MOLE_COMMIT="$(git -C "$REPO_DIR" rev-parse --short HEAD 2> /dev/null || echo unknown)"
+cp "$APP_DIR/CHANGELOG.md" "$OUT/Contents/Resources/"
+
+# Version: app/VERSION by hand at milestones; build = Burrow commits since its first one.
+BURROW_VERSION="$(tr -d '[:space:]' < "$APP_DIR/VERSION")"
+BURROW_BUILD="$(git -C "$REPO_DIR" rev-list --count aeb00fdd^..HEAD -- app 2> /dev/null || echo 0)"
+BURROW_COMMIT="$MOLE_COMMIT"
+if [[ -n "$(git -C "$REPO_DIR" status --porcelain -- app 2> /dev/null)" ]]; then
+    BURROW_COMMIT="$BURROW_COMMIT+local"
+fi
 
 cat > "$OUT/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -66,8 +75,9 @@ cat > "$OUT/Contents/Info.plist" << EOF
     <key>CFBundleExecutable</key><string>Burrow</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleShortVersionString</key><string>$BURROW_VERSION</string>
+    <key>CFBundleVersion</key><string>$BURROW_BUILD</string>
+    <key>BurrowCommit</key><string>$BURROW_COMMIT</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>BundledMoleVersion</key><string>$MOLE_VERSION ($MOLE_COMMIT)</string>

@@ -21,6 +21,36 @@ enum ToolChecks {
             }
         }
 
+        Checks.add("changelog", "releases and their items parse in order") {
+            let releases = Changelog.parse("""
+            # Burrow 更新说明
+
+            说明文字，不是条目。
+            - 版本标题之前的条目会被忽略
+
+            ## 0.3.0 — 2026-10-22
+
+            - 第一条
+            - 第二条，含 — 破折号
+            ## 0.2.0 — 2026-10-21
+            - 旧版本
+            """)
+            expect(releases.map(\.version) == ["0.3.0", "0.2.0"], "\(releases.map(\.version))")
+            expect(releases.first?.date == "2026-10-22", "\(releases.first?.date ?? "")")
+            expect(releases.first?.items == ["第一条", "第二条，含 — 破折号"], "\(releases.first?.items ?? [])")
+            expect(releases.last?.items == ["旧版本"], "\(releases.last?.items ?? [])")
+        }
+
+        Checks.add("changelog", "app/VERSION matches the newest CHANGELOG release") {
+            let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+            let version = try String(contentsOf: app.appendingPathComponent("VERSION"), encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let releases = Changelog.parse(try String(contentsOf: app.appendingPathComponent("CHANGELOG.md"), encoding: .utf8))
+            expect(releases.first?.version == version, "VERSION \(version) vs CHANGELOG \(releases.first?.version ?? "none")")
+            expect(releases.allSatisfy { !$0.items.isEmpty && $0.date.count == 10 }, "every release has a date and items")
+        }
+
         Checks.add("doctor", "each problem in a status snapshot is reported") {
             let json = #"""
             {"uptime":"10d 2h","uptime_seconds":874800,"health_score":52,"health_score_msg":"Fair",

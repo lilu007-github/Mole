@@ -16,6 +16,10 @@ struct BurrowApp: App {
             AboutView()
         }
         .windowResizability(.contentSize)
+        Window("Burrow 更新说明", id: "changelog") {
+            ChangelogView()
+        }
+        .windowResizability(.contentSize)
         Window("诊断", id: "doctor") {
             DoctorView()
         }
