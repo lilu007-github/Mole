@@ -77,6 +77,7 @@ struct ContentView: View {
                 case .optimize: OptimizeView()
                 case .installer: InstallerView()
                 case .uninstall: UninstallView()
+                case .updates: AppUpdatesView()
                 case .history: HistoryView()
                 }
             }

@@ -31,9 +31,12 @@ final class TerminalSession {
         currentLine.isEmpty ? lines : lines + [currentLine]
     }
 
-    /// - Parameter columns: terminal width; wider for menus that shorten long paths.
-    func start(_ arguments: [String], usePTY: Bool, columns: Int = MoleCLI.terminalColumns) {
-        guard !isRunning, let mo = MoleCLI.executableURL else { return }
+    /// - Parameters:
+    ///   - columns: terminal width; wider for menus that shorten long paths.
+    ///   - executable: what to run; the Mole CLI unless given (e.g. brew).
+    func start(_ arguments: [String], usePTY: Bool, columns: Int = MoleCLI.terminalColumns,
+               executable: URL? = nil) {
+        guard !isRunning, let mo = executable ?? MoleCLI.executableURL else { return }
         lines = []
         currentLine = ""
         exitCode = nil

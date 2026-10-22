@@ -22,11 +22,14 @@ struct PromptBar: View {
             && answeredAt.map { session.lineSerial > $0 } ?? true
     }
 
+    /// Mole prints "Enter your credentials:" on its own line; sudo (from brew,
+    /// for example) leaves "Password:" as the unfinished current line.
     private var awaitingPassword: Bool {
-        guard session.isRunning, session.currentLine.isEmpty,
-              let last = session.lines.last(where: { !$0.isEmpty }),
-              last.contains("Enter your credentials")
-        else { return false }
+        guard session.isRunning else { return false }
+        let sudoPrompt = session.currentLine.trimmingCharacters(in: .whitespaces).hasSuffix("Password:")
+        let molePrompt = session.currentLine.isEmpty
+            && session.lines.last(where: { !$0.isEmpty })?.contains("Enter your credentials") == true
+        guard sudoPrompt || molePrompt else { return false }
         return passwordSentAt.map { session.lineSerial > $0 } ?? true
     }
 
