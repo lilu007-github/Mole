@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct UninstallView: View {
@@ -103,6 +104,10 @@ struct UninstallSheet: View {
     @State private var wanted = Set<String>()
     @State private var applying = false
     @State private var dataProblem: String?
+    /// Selected apps still running when the sheet opened (real uninstalls only).
+    @State private var running: [NSRunningApplication] = []
+    @State private var quitting = false
+    @State private var started = false
 
     private var plan: UninstallPlan? { UninstallPlan.parse(session.allLines) }
     private var awaitingConfirm: Bool { session.isRunning && session.currentLine.contains(PromptBar.confirmMarker) }
@@ -115,6 +120,9 @@ struct UninstallSheet: View {
                 ? "下面是 Mole 生成的卸载计划。"
                 : "请核对 Mole 给出的计划。应用会被移到废纸篓；个人数据默认保留，可在下方选择一并删除。")
                 .foregroundStyle(.secondary)
+            if !started && !running.isEmpty {
+                runningBox
+            }
             RawOutputView(lines: session.allLines)
                 .frame(minHeight: 260)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -129,15 +137,57 @@ struct UninstallSheet: View {
         .frame(width: 780, height: 640)
         .interactiveDismissDisabled(session.isRunning)
         .onAppear {
-            var args = ["uninstall"]
-            if job.dryRun { args.append("--dry-run") }
-            session.start(args + job.apps.map(\.uninstallName), usePTY: true)
+            running = job.dryRun ? [] : job.apps.flatMap { app in
+                NSWorkspace.shared.runningApplications.filter { $0.bundleURL?.path == app.path }
+            }
+            if running.isEmpty { start() }
         }
         .onChange(of: session.lineSerial) {
             guard personalOrder == nil, awaitingConfirm, let plan, plan.personalRemoved.isEmpty else { return }
             personalOrder = plan.personalKept
         }
         .onDisappear { if session.isRunning { session.terminate() } }
+    }
+
+    private func start() {
+        started = true
+        var args = ["uninstall"]
+        if job.dryRun { args.append("--dry-run") }
+        session.start(args + job.apps.map(\.uninstallName), usePTY: true)
+    }
+
+    private var runningBox: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(running.compactMap(\.localizedName).joined(separator: "、")) 正在运行",
+                  systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("建议先退出再卸载，避免正在运行的程序重新写入文件。退出时 App 可能会提示保存。")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                if quitting { ProgressView().controlSize(.small); Text("正在等待 App 退出…").foregroundStyle(.secondary) }
+                Spacer()
+                Button("直接继续") { start() }.disabled(quitting)
+                Button("退出后继续") { Task { await quitThenStart() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(quitting)
+            }
+        }
+        .padding(10)
+        .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Asks each app to quit, waits up to 15 s, then starts Mole's uninstall
+    /// either way; Mole marks apps that are still running.
+    private func quitThenStart() async {
+        quitting = true
+        running.forEach { $0.terminate() }
+        let end = Date().addingTimeInterval(15)
+        while Date() < end, running.contains(where: { !$0.isTerminated }) {
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        running = running.filter { !$0.isTerminated }
+        quitting = false
+        start()
     }
 
     private func personalDataBox(_ order: [String]) -> some View {
