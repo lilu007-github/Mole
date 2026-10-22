@@ -6,6 +6,7 @@ import SwiftUI
 struct AnalyzeView: View {
     /// nil is the overview scan (`mo analyze` with no path).
     @State private var trail: [String?] = [nil]
+    @AppStorage("analyzeShowsTreemap") private var showTreemap = false
     @State private var results: [String: AnalyzeResult] = [:]
     @State private var loading = false
     @State private var error: String?
@@ -18,7 +19,11 @@ struct AnalyzeView: View {
             toolbar
             Divider()
             if let result = results[cacheKey] {
-                list(result)
+                if showTreemap {
+                    TreemapView(entries: result.entries.filter { $0.insight != true }) { open($0) }
+                } else {
+                    list(result)
+                }
             } else if let error {
                 ContentUnavailableView("扫描失败", systemImage: "exclamationmark.triangle", description: Text(error))
             } else {
@@ -47,6 +52,14 @@ struct AnalyzeView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
+            Picker("", selection: $showTreemap) {
+                Image(systemName: "list.bullet").tag(false)
+                Image(systemName: "square.grid.2x2").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("列表 / 方块图")
             Button("选择文件夹…") { pickFolder() }
             Button {
                 Task { await load(force: true) }

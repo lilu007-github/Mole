@@ -17,6 +17,7 @@ Task { @MainActor in
     ProcessDetailChecks.register()
     NotifierChecks.register()
     MenuBarChecks.register()
+    TreemapChecks.register()
     LiveChecks.register()
     let status = await Checks.run(filter: CommandLine.arguments.dropFirst().first)
     removeFixtures()
