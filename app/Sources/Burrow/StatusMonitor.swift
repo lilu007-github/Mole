@@ -71,6 +71,7 @@ final class StatusMonitor {
             activeNetwork = Self.activeNetwork(in: next, previous: activeNetwork,
                                                primary: PrimaryInterface.current)
             history.append(StatusSample(next, network: activeNetwork))
+            Notifier.evaluate(next)
             if history.count > Self.historyLimit { history.removeFirst(history.count - Self.historyLimit) }
             error = nil
         } catch {

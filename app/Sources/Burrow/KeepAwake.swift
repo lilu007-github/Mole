@@ -43,7 +43,10 @@ final class KeepAwake {
             until = Date().addingTimeInterval(duration)
             expiry = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(duration))
-                if !Task.isCancelled { self?.disable() }
+                if !Task.isCancelled {
+                    self?.disable()
+                    Notifier.keepAwakeEnded()
+                }
             }
         }
     }
