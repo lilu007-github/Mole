@@ -14,6 +14,9 @@ final class TerminalSession {
     private(set) var currentLine = ""
     private(set) var isRunning = false
     private(set) var exitCode: Int32?
+    /// Count of lines ever completed. Unlike `lines.count` it never goes down
+    /// when the screen is redrawn, so prompts can tell "new" from "answered".
+    private(set) var lineSerial = 0
 
     private var process: Process?
     private var inputPipe: Pipe?
@@ -30,6 +33,7 @@ final class TerminalSession {
         lines = []
         currentLine = ""
         exitCode = nil
+        lineSerial = 0
         parser = TerminalTextParser()
         pendingBytes = Data()
 
@@ -38,7 +42,7 @@ final class TerminalSession {
             // A fixed window size keeps Mole's column layout stable.
             process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
             process.arguments = ["-q", "/dev/null", "/bin/bash", "-c",
-                                 "stty cols 110 rows 40 2>/dev/null; exec \"$0\" \"$@\"",
+                                 "stty cols \(MoleCLI.terminalColumns) rows \(MoleCLI.terminalRows) 2>/dev/null; exec \"$0\" \"$@\"",
                                  mo.path] + arguments
         } else {
             process.executableURL = mo
@@ -102,6 +106,7 @@ final class TerminalSession {
         let text = String(decoding: pendingBytes.prefix(cut), as: UTF8.self)
         pendingBytes = Data(pendingBytes.suffix(from: pendingBytes.startIndex + cut))
         parser.feed(text, lines: &lines, current: &currentLine)
+        lineSerial = parser.committed
         if lines.count > 4000 { lines.removeFirst(lines.count - 4000) }
     }
 }
@@ -113,6 +118,7 @@ struct TerminalTextParser {
     private var state = State.normal
     private var params = ""
     private var pendingCR = false
+    private(set) var committed = 0
 
     mutating func feed(_ text: String, lines: inout [String], current: inout String) {
         for ch in text.unicodeScalars {
@@ -123,6 +129,7 @@ struct TerminalTextParser {
                     if ch == "\n" {
                         lines.append(current)
                         current = ""
+                        committed += 1
                         continue
                     }
                     current = "" // bare \r: the next text overwrites the line
@@ -133,6 +140,7 @@ struct TerminalTextParser {
                 case "\n":
                     lines.append(current)
                     current = ""
+                    committed += 1
                 case "\u{8}": if !current.isEmpty { current.removeLast() }
                 case "\t": current.append("    ")
                 default:
@@ -165,6 +173,8 @@ struct TerminalTextParser {
         switch final {
         case "K": current = ""
         case "J" where params == "2": lines.removeAll(); current = ""
+        // Cursor home: full-screen menus redraw from the top, so start a fresh screen.
+        case "H" where params.isEmpty || params == "1;1": lines.removeAll(); current = ""
         case "A":
             // Cursor up: Mole only uses it to redraw the previous line.
             let count = Int(params) ?? 1

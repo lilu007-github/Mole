@@ -6,6 +6,8 @@ import Foundation
 /// `mo`, so the CLI's protection lists, dry-run parity and operation log apply.
 enum MoleCLI {
     static let pathDefaultsKey = "molePath"
+    static let terminalColumns = 110
+    static let terminalRows = 40
 
     /// Resolution order: user setting, the repo checkout recorded at build time,
     /// then the usual install locations.
@@ -34,6 +36,10 @@ enum MoleCLI {
         let current = env["PATH"].map { $0.split(separator: ":").map(String.init) } ?? []
         env["PATH"] = (current + extra.filter { !current.contains($0) }).joined(separator: ":")
         env["TERM"] = "xterm-256color"
+        // Same size as the PTY, so lists that truncate names render identically
+        // with and without a terminal (tput honors these variables).
+        env["COLUMNS"] = String(terminalColumns)
+        env["LINES"] = String(terminalRows)
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"
         return env
     }

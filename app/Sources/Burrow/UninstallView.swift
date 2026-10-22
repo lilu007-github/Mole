@@ -98,20 +98,6 @@ struct UninstallSheet: View {
     let job: UninstallJob
     @Environment(\.dismiss) private var dismiss
     @State private var session = TerminalSession()
-    @State private var answered = false
-    @State private var password = ""
-    @State private var passwordSentAt: Int?
-
-    private var awaitingConfirm: Bool {
-        session.isRunning && !answered && session.currentLine.contains("Enter confirm, ESC cancel")
-    }
-
-    private var awaitingPassword: Bool {
-        guard session.isRunning,
-              let index = session.allLines.lastIndex(where: { $0.contains("Enter your credentials") })
-        else { return false }
-        return passwordSentAt.map { index >= $0 } ?? true
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -124,41 +110,7 @@ struct UninstallSheet: View {
             RawOutputView(lines: session.allLines)
                 .frame(minHeight: 320)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-
-            if awaitingPassword {
-                HStack {
-                    SecureField("管理员密码", text: $password)
-                        .onSubmit(sendPassword)
-                    Button("提交", action: sendPassword).disabled(password.isEmpty)
-                }
-            }
-
-            HStack {
-                if session.isRunning {
-                    ProgressView().controlSize(.small)
-                }
-                if let code = session.exitCode {
-                    Text(code == 0 ? "已完成" : "已结束（退出码 \(code)）")
-                        .foregroundStyle(code == 0 ? Color.secondary : Color.orange)
-                }
-                Spacer()
-                if awaitingConfirm {
-                    Button("取消") {
-                        answered = true
-                        session.send("\u{1b}")
-                    }
-                    Button(job.dryRun ? "继续预览" : "确认卸载", role: .destructive) {
-                        answered = true
-                        session.send("\r")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                } else if session.isRunning {
-                    Button("停止") { session.terminate() }
-                } else {
-                    Button("关闭") { dismiss() }.keyboardShortcut(.defaultAction)
-                }
-            }
+            PromptBar(session: session, confirmLabel: job.dryRun ? "继续预览" : "确认卸载") { dismiss() }
         }
         .padding(20)
         .frame(width: 760, height: 560)
@@ -169,12 +121,5 @@ struct UninstallSheet: View {
             session.start(args + job.apps.map(\.uninstallName), usePTY: true)
         }
         .onDisappear { if session.isRunning { session.terminate() } }
-    }
-
-    private func sendPassword() {
-        guard !password.isEmpty else { return }
-        session.send(password + "\r")
-        password = ""
-        passwordSentAt = session.allLines.count
     }
 }

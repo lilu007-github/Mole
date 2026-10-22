@@ -12,7 +12,7 @@ struct CleanView: View {
     @State private var showRaw = false
     @State private var confirming = false
 
-    private var report: CleanReport { CleanReport(lines: session.allLines) }
+    private var report: SectionReport { SectionReport(lines: session.allLines) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -108,87 +108,5 @@ struct CleanView: View {
     private func run(_ newMode: Mode) {
         mode = newMode
         session.start(newMode == .preview ? ["clean", "--dry-run"] : ["clean"], usePTY: false)
-    }
-}
-
-/// Groups `mo clean` output into its "➤ Section" blocks and the closing summary.
-struct CleanReport {
-    struct Item {
-        var icon: String
-        var text: String
-
-        var color: Color {
-            switch icon {
-            case "✓": .green
-            case "◎", "☻": .orange
-            case "⊙": .blue
-            default: .secondary
-            }
-        }
-    }
-
-    struct Section: Identifiable {
-        var id: Int
-        var title: String
-        var items: [Item] = []
-    }
-
-    var sections: [Section] = []
-    var summary: [String] = []
-
-    init(lines: [String]) {
-        var inSummary = false
-        for raw in lines {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("====") {
-                inSummary.toggle()
-                continue
-            }
-            if inSummary {
-                if !line.isEmpty { summary.append(line) }
-            } else if line.hasPrefix("➤ ") {
-                sections.append(Section(id: sections.count, title: String(line.dropFirst(2))))
-            } else if !line.isEmpty, raw.hasPrefix("  "), !sections.isEmpty {
-                let icon = String(line.prefix(1))
-                let text = line.dropFirst().trimmingCharacters(in: .whitespaces)
-                sections[sections.count - 1].items.append(Item(icon: icon, text: text))
-            }
-        }
-    }
-
-    /// "Potential space: 11.09GB+ | Items: …" from the dry-run summary.
-    var potentialSpace: String? {
-        for line in summary {
-            for prefix in ["Potential space:", "Space freed:"] where line.hasPrefix(prefix) {
-                return line.dropFirst(prefix.count).split(separator: "|").first?
-                    .trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return nil
-    }
-}
-
-struct RawOutputView: View {
-    let lines: [String]
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-                        Text(line.isEmpty ? " " : line)
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                            .id(index)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-            }
-            .background(Color(nsColor: .textBackgroundColor))
-            .onChange(of: lines.count) { _, count in
-                if count > 0 { proxy.scrollTo(count - 1, anchor: .bottom) }
-            }
-        }
     }
 }
