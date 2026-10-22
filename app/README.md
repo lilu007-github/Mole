@@ -21,9 +21,11 @@ under GPL-3.0 ([LICENSE](../LICENSE)).
 | Optimize | Preview, run with admin prompt relay, performance diagnosis | `mo optimize` |
 | Installers | Select and delete | `mo installer` menu, verified against Mole's plan |
 | Uninstall | Plan, personal data choice, quit running apps first | `mo uninstall` in a PTY |
+| Slim apps | Intel code per app, choose apps, running apps flagged | `mo slim` menu, verified against Mole's list |
 | App updates | Homebrew casks and Sparkle feeds, ignore, update all | `brew outdated/upgrade`, appcasts |
 | Startup items | LaunchAgents/Daemons with state and broken programs | plists, `launchctl` (read-only) |
 | History | Sessions, per-run rows, deletions | `mo history --json`, operations.log |
+| Touch ID | Use Touch ID for sudo, on or off | `mo touchid` |
 | Tools | Menu bar panel and metric, keep awake (pauses on low battery), Clean Screen, Doctor, eject drives, notifications, global shortcuts, launch at login | AppKit, IOKit, Carbon hot keys |
 
 Not included: fan control and battery charge limits (need a privileged helper

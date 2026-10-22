@@ -1,6 +1,6 @@
 /// The pages in the sidebar, also used by Doctor to link to a page.
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case status, analyze, clean, ai, purge, optimize, installer, uninstall, updates, startup, history
+    case status, analyze, clean, ai, purge, optimize, installer, uninstall, slim, updates, startup, history
 
     var id: String { rawValue }
 
@@ -14,6 +14,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .optimize: "优化"
         case .installer: "安装包"
         case .uninstall: "卸载应用"
+        case .slim: "精简 App"
         case .updates: "应用更新"
         case .startup: "启动项"
         case .history: "历史记录"
@@ -30,6 +31,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .optimize: "wand.and.stars"
         case .installer: "shippingbox"
         case .uninstall: "trash"
+        case .slim: "scissors"
         case .updates: "arrow.down.app"
         case .startup: "power"
         case .history: "clock.arrow.circlepath"

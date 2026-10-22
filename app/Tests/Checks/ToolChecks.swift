@@ -21,6 +21,16 @@ enum ToolChecks {
             }
         }
 
+        Checks.add("touchid", "mo touchid status lines map to a state") {
+            expect(TouchIDSudo.parse("✓ Touch ID is enabled for sudo\n") == .enabled, "enabled")
+            expect(TouchIDSudo.parse("☻ Touch ID is not configured for sudo\n") == .disabled, "disabled")
+            expect(TouchIDSudo.parse("Run Mole without sudo") == .unknown, "anything else")
+        }
+
+        Checks.add("touchid", "status reads the real mo touchid output", live: true) {
+            expect(await TouchIDSudo.status() != .unknown, "mo touchid status gave no known line")
+        }
+
         Checks.add("changelog", "releases and their items parse in order") {
             let releases = Changelog.parse("""
             # Burrow 更新说明

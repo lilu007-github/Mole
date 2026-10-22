@@ -73,6 +73,7 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+            TouchIDSection()
             Section("通知") {
                 Toggle(Notifier.Kind.diskSpace.title + "（少于 10 GB）", isOn: $notifyDisk)
                 Toggle(Notifier.Kind.bluetoothBattery.title + "（低于 20%）", isOn: $notifyBluetooth)

@@ -25,6 +25,25 @@ enum ParsingChecks {
             expect(parse("old\n\(esc)[2J\(esc)[Hnew\n") == ["new"], "2J")
             expect(parse("menu v1\n\(esc)[Hmenu v2\n") == ["menu v2"], "H")
         }
+        Checks.add("parser", "a cursor move to a row rewrites that row in place") {
+            // Mole's paginated menu repaints only the rows the cursor left and entered.
+            let frame = "\(esc)[H\(esc)[2JSelect apps to slim  0/2 selected\n\n➤ ○ Sequel Ace   19.4MB\n  ○ Steam   4.9MB\n\n↑↓ | Space Select\n"
+            let down = "\(esc)[3;1H\r\(esc)[2K  ○ Sequel Ace   19.4MB\r\n\(esc)[4;1H\r\(esc)[2K\(esc)[0;36m➤ ○ Steam   4.9MB\(esc)[0m\r\n\(esc)[38;1H"
+            let expected = ["Select apps to slim  0/2 selected", "", "  ○ Sequel Ace   19.4MB", "➤ ○ Steam   4.9MB", "", "↑↓ | Space Select"]
+            for chunk in [1, 7, 4096] {
+                let lines = parse(frame + down, chunk: chunk)
+                expect(Array(lines.prefix(6)) == expected, "chunk \(chunk): \(lines)")
+                expect(lines.dropFirst(6).allSatisfy(\.isEmpty), "chunk \(chunk): nothing appended below")
+            }
+            // Space repaints the header with ESC[1;1H and the row; the rest of the menu stays.
+            let space = "\(esc)[1;1H\r\(esc)[2KSelect apps to slim  1/2 selected\r\n\(esc)[4;1H\r\(esc)[2K➤ ● Steam   4.9MB\r\n\(esc)[38;1H"
+            let selected = parse(frame + down + space)
+            expect(Array(selected.prefix(6)) == ["Select apps to slim  1/2 selected", "", "  ○ Sequel Ace   19.4MB",
+                                                 "➤ ● Steam   4.9MB", "", "↑↓ | Space Select"], "\(selected)")
+            // Leaving the alternate screen goes back to appending.
+            let after = parse(frame + "\(esc)[3;1H\(esc)[?1049lApps to slim:\n")
+            expect(after.last == "Apps to slim:" && after.contains("➤ ○ Sequel Ace   19.4MB"), "\(after)")
+        }
         Checks.add("parser", "OSC titles and charset switches are dropped") {
             expect(parse("\(esc)]0;title\u{7}\(esc)(Bx\n") == ["x"], "\(parse("\(esc)]0;title\u{7}\(esc)(Bx\n"))")
         }

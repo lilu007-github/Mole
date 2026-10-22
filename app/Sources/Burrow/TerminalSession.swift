@@ -131,6 +131,12 @@ struct TerminalTextParser {
     private var params = ""
     private var pendingCR = false
     private(set) var committed = 0
+    /// Set while a menu repaints a row it moved to with `ESC[row;colH`: the index
+    /// in `lines` being rewritten, and its text between `feed` calls.
+    private var row: Int?
+    private var rowText = ""
+    /// The first character written after a move overwrites the row, as on a terminal.
+    private var overwritePending = false
     private var committedLines: [String] = []
 
     /// Lines completed since the last call.
@@ -146,28 +152,41 @@ struct TerminalTextParser {
     }
 
     mutating func feed(_ text: String, lines: inout [String], current: inout String) {
+        // While rewriting a row, `current` is that row; the caller's partial line waits aside.
+        var appendLine = ""
+        if row != nil { appendLine = current; current = rowText }
+        defer {
+            if let index = row, index < lines.count {
+                lines[index] = current
+                rowText = current
+                current = appendLine
+            } else if row != nil {
+                row = nil
+            }
+        }
         for ch in text.unicodeScalars {
             switch state {
             case .normal:
                 if pendingCR {
                     pendingCR = false
                     if ch == "\n" {
-                        commit(current, into: &lines)
-                        current = ""
+                        newline(lines: &lines, current: &current)
                         continue
                     }
-                    current = "" // bare \r: the next text overwrites the line
+                    if row != nil { overwritePending = true } else { current = "" } // bare \r: the next text overwrites the line
                 }
                 switch ch {
                 case "\u{1b}": state = .escape
                 case "\r": pendingCR = true
                 case "\n":
-                    commit(current, into: &lines)
-                    current = ""
+                    newline(lines: &lines, current: &current)
                 case "\u{8}": if !current.isEmpty { current.removeLast() }
                 case "\t": current.append("    ")
                 default:
-                    if ch.value >= 0x20 { current.unicodeScalars.append(ch) }
+                    if ch.value >= 0x20 {
+                        if overwritePending { current = ""; overwritePending = false }
+                        current.unicodeScalars.append(ch)
+                    }
                 }
             case .escape:
                 switch ch {
@@ -192,13 +211,77 @@ struct TerminalTextParser {
         }
     }
 
-    private func apply(final: Unicode.Scalar, lines: inout [String], current: inout String) {
+    /// End of a line: append it, or, while rewriting rows, store it and move to the next row.
+    private mutating func newline(lines: inout [String], current: inout String) {
+        guard let index = row else {
+            commit(current, into: &lines)
+            current = ""
+            return
+        }
+        if index < lines.count { lines[index] = current }
+        committedLines.append(current)
+        committed += 1
+        if index + 1 < lines.count {
+            row = index + 1
+            current = lines[index + 1]
+            overwritePending = true
+        } else {
+            row = nil
+            current = ""
+            overwritePending = false
+        }
+    }
+
+    /// `ESC[row;colH` below the top row: rewrite that row in place. Rows past the
+    /// end are padded, then writing continues by appending.
+    private mutating func move(toRow target: Int, lines: inout [String], current: inout String) {
+        if let index = row, index < lines.count {
+            lines[index] = current
+        } else if !current.isEmpty {
+            lines.append(current)
+        }
+        let index = max(target - 1, 0)
+        if index < lines.count {
+            row = index
+            current = lines[index]
+            overwritePending = true
+        } else {
+            while lines.count < index { lines.append("") }
+            row = nil
+            current = ""
+            overwritePending = false
+        }
+    }
+
+    /// Store the row being rewritten and go back to appending below the last line.
+    private mutating func leaveRows(lines: inout [String], current: inout String) {
+        if let index = row {
+            if index < lines.count { lines[index] = current }
+            current = ""
+        }
+        row = nil
+        overwritePending = false
+    }
+
+    private mutating func apply(final: Unicode.Scalar, lines: inout [String], current: inout String) {
         switch final {
-        case "K": current = ""
-        case "J" where params == "2": lines.removeAll(); current = ""
-        // Cursor home: full-screen menus redraw from the top, so start a fresh screen.
-        case "H" where params.isEmpty || params == "1;1": lines.removeAll(); current = ""
+        case "K": current = ""; overwritePending = false
+        case "J" where params == "2": row = nil; overwritePending = false; lines.removeAll(); current = ""
+        // Bare cursor home: full-screen menus redraw from the top, so start a fresh screen.
+        // An explicit row, even "1;1", only moves there: menus repaint single rows that way.
+        case "H" where params.isEmpty:
+            row = nil; overwritePending = false; lines.removeAll(); current = ""
+        case "H", "f":
+            let target = params.split(separator: ";").first.flatMap { Int($0) } ?? 1
+            move(toRow: target, lines: &lines, current: &current)
+        // Entering or leaving the alternate screen: plain appending resumes.
+        case "h", "l":
+            if ["?1049", "?1047", "?47"].contains(params) { leaveRows(lines: &lines, current: &current) }
         case "A":
+            if let index = row {
+                move(toRow: index + 1 - (Int(params) ?? 1), lines: &lines, current: &current)
+                break
+            }
             // Cursor up: Mole only uses it to redraw the previous line.
             let count = Int(params) ?? 1
             for _ in 0..<count where !lines.isEmpty { current = lines.removeLast() }
