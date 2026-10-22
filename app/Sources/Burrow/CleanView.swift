@@ -11,6 +11,7 @@ struct CleanView: View {
     @State private var mode: Mode?
     @State private var showRaw = false
     @State private var confirming = false
+    @State private var editingWhitelist = false
 
     private var report: SectionReport { SectionReport(lines: session.allLines) }
 
@@ -24,6 +25,7 @@ struct CleanView: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .sheet(isPresented: $editingWhitelist) { WhitelistSheet(mode: .clean) }
         .navigationTitle("清理")
         .confirmationDialog("开始清理？", isPresented: $confirming) {
             Button("清理", role: .destructive) { run(.clean) }
@@ -44,6 +46,7 @@ struct CleanView: View {
                 Text(subtitle).font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
+            Button("白名单…") { editingWhitelist = true }.disabled(session.isRunning)
             Toggle("原始输出", isOn: $showRaw).toggleStyle(.switch).controlSize(.small)
             if session.isRunning {
                 ProgressView().controlSize(.small)

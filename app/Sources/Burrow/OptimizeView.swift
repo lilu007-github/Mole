@@ -11,6 +11,7 @@ struct OptimizeView: View {
     @State private var mode: Mode?
     @State private var showRaw = false
     @State private var confirming = false
+    @State private var editingWhitelist = false
 
     private var report: SectionReport { SectionReport(lines: session.allLines) }
 
@@ -29,6 +30,7 @@ struct OptimizeView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .sheet(isPresented: $editingWhitelist) { WhitelistSheet(mode: .optimize) }
         .navigationTitle("优化")
         .confirmationDialog("开始优化？", isPresented: $confirming) {
             Button("优化") { run(.optimize) }
@@ -45,6 +47,7 @@ struct OptimizeView: View {
                 Text(subtitle).font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
+            Button("白名单…") { editingWhitelist = true }.disabled(session.isRunning)
             Toggle("原始输出", isOn: $showRaw).toggleStyle(.switch).controlSize(.small)
             if session.isRunning {
                 ProgressView().controlSize(.small)
