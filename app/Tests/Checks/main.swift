@@ -4,6 +4,7 @@ import Foundation
 Task { @MainActor in
     ParsingChecks.register()
     AIChecks.register()
+    HistoryChecks.register()
     LiveChecks.register()
     let status = await Checks.run(filter: CommandLine.arguments.dropFirst().first)
     removeFixtures()

@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case status, analyze, clean, ai, optimize, installer, uninstall
+    case status, analyze, clean, ai, optimize, installer, uninstall, history
 
     var id: String { rawValue }
 
@@ -55,6 +55,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .optimize: "优化"
         case .installer: "安装包"
         case .uninstall: "卸载应用"
+        case .history: "历史记录"
         }
     }
 
@@ -67,6 +68,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .optimize: "wand.and.stars"
         case .installer: "shippingbox"
         case .uninstall: "trash"
+        case .history: "clock.arrow.circlepath"
         }
     }
 }
@@ -97,6 +99,7 @@ struct ContentView: View {
                 case .optimize: OptimizeView()
                 case .installer: InstallerView()
                 case .uninstall: UninstallView()
+                case .history: HistoryView()
                 }
             }
         }

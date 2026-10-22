@@ -40,6 +40,11 @@ done
 
 rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources/mole/bin"
+
+# The icon is drawn in code (scripts/make-icon.swift); no image assets in the repo.
+rm -rf "$BUILD_DIR/AppIcon.iconset"
+swift "$APP_DIR/scripts/make-icon.swift" "$BUILD_DIR/AppIcon.iconset"
+iconutil -c icns -o "$OUT/Contents/Resources/AppIcon.icns" "$BUILD_DIR/AppIcon.iconset"
 lipo -create "${SWIFT_SLICES[@]}" -output "$OUT/Contents/MacOS/Burrow"
 
 CLI="$OUT/Contents/Resources/mole"
@@ -59,6 +64,7 @@ cat > "$OUT/Contents/Info.plist" << EOF
     <key>CFBundleDisplayName</key><string>Burrow</string>
     <key>CFBundleIdentifier</key><string>dev.burrow.app</string>
     <key>CFBundleExecutable</key><string>Burrow</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.2.0</string>
     <key>CFBundleVersion</key><string>2</string>
