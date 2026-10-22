@@ -42,11 +42,12 @@ struct WhitelistSheet: View {
                     ForEach(visible) { row in
                         Toggle(isOn: binding(for: row)) {
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(row.name)
+                                Text(row.name + (row.alwaysProtected ? "（Mole 内置安全规则，始终保护）" : ""))
                                 Text(row.pattern).font(.caption).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                         }
+                        .disabled(row.alwaysProtected)
                     }
                 }
                 if mode == .clean {

@@ -12,6 +12,7 @@ struct CleanView: View {
     @State private var showRaw = false
     @State private var confirming = false
     @State private var editingWhitelist = false
+    @State private var cleaningExternal = false
 
     private var report: SectionReport { SectionReport(lines: session.allLines) }
 
@@ -26,6 +27,7 @@ struct CleanView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .sheet(isPresented: $editingWhitelist) { WhitelistSheet(mode: .clean) }
+        .sheet(isPresented: $cleaningExternal) { ExternalCleanSheet() }
         .navigationTitle("清理")
         .confirmationDialog("开始清理？", isPresented: $confirming) {
             Button("清理", role: .destructive) { run(.clean) }
@@ -46,6 +48,7 @@ struct CleanView: View {
                 Text(subtitle).font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
+            Button("外置磁盘…") { cleaningExternal = true }.disabled(session.isRunning)
             Button("白名单…") { editingWhitelist = true }.disabled(session.isRunning)
             Toggle("原始输出", isOn: $showRaw).toggleStyle(.switch).controlSize(.small)
             if session.isRunning {

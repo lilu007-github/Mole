@@ -19,6 +19,8 @@ enum Whitelist {
         /// Portable form with "~", as Mole saves it.
         var pattern: String
         var protected: Bool
+        /// A built-in safety rule: Mole adds it back on every load, so it cannot be turned off.
+        var alwaysProtected = false
         var id: String { pattern }
     }
 
@@ -42,8 +44,9 @@ enum Whitelist {
         var custom: [String] = []
         for line in output.split(separator: "\n") {
             let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            if fields.first == "ROW", fields.count == 4 {
-                rows.append(Row(name: fields[2], pattern: fields[3], protected: fields[1] == "1"))
+            if fields.first == "ROW", fields.count == 5 {
+                rows.append(Row(name: fields[2], pattern: fields[3], protected: fields[1] == "1",
+                                alwaysProtected: fields[4] == "1"))
             } else if fields.first == "CUSTOM", fields.count == 2 {
                 custom.append(fields[1])
             }
@@ -126,7 +129,11 @@ enum Whitelist {
         patterns+=("$pattern")
         flag=0
         is_whitelisted "$pattern" && flag=1
-        printf 'ROW\t%s\t%s\t%s\n' "$flag" "$name" "${pattern/#$HOME/~}"
+        safety=0
+        for s in "${SAFETY_WHITELIST_PATTERNS[@]+"${SAFETY_WHITELIST_PATTERNS[@]}"}"; do
+            patterns_equivalent "$pattern" "$s" && { safety=1; flag=1; break; }
+        done
+        printf 'ROW\t%s\t%s\t%s\t%s\n' "$flag" "$name" "${pattern/#$HOME/~}" "$safety"
     done <<< "$items"
 
     for current in "${CURRENT_WHITELIST_PATTERNS[@]+"${CURRENT_WHITELIST_PATTERNS[@]}"}"; do
