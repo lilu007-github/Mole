@@ -16,16 +16,12 @@ struct MenuBarLabel: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: keepAwake.isActive ? "cup.and.saucer.fill" : "hare")
-            if showSpeed, let net = activeNetwork {
+            if showSpeed, let net = monitor.activeNetwork {
                 Text("↓\(Self.compact(net.rxRateMbs)) ↑\(Self.compact(net.txRateMbs))")
                     .monospacedDigit()
             }
         }
         .task { monitor.start() }
-    }
-
-    private var activeNetwork: StatusSnapshot.Network? {
-        monitor.snapshot?.network?.first { !($0.ip ?? "").isEmpty }
     }
 
     /// "1.2M" / "340K": short enough for the menu bar.
@@ -80,7 +76,7 @@ struct MenuBarView: View {
                 MiniMeter(title: "磁盘", percent: disk.usedPercent,
                           detail: "剩余 \(Format.bytes((disk.total ?? 0) - (disk.used ?? 0)))")
             }
-            if let net = s.network?.first(where: { !($0.ip ?? "").isEmpty }) {
+            if let net = monitor.activeNetwork {
                 HStack {
                     Text("网络").frame(width: 34, alignment: .leading)
                     Label(Format.rate(net.rxRateMbs), systemImage: "arrow.down")

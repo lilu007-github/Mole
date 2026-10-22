@@ -17,6 +17,38 @@ struct StatusSnapshot: Decodable {
         var load5: Double?
         var load15: Double?
         var coreCount: Int?
+        var pCoreCount: Int?
+        var eCoreCount: Int?
+    }
+
+    struct GPU: Decodable {
+        var name: String?
+        var usage: Double?
+        var coreCount: Int?
+    }
+
+    struct Thermal: Decodable {
+        var cpuTemp: Double?
+        var gpuTemp: Double?
+        var batteryTemp: Double?
+        var fanSpeed: Int?
+        var fanCount: Int?
+        var systemPower: Double?
+        var adapterPower: Double?
+        var batteryPower: Double?
+    }
+
+    struct Proxy: Decodable {
+        var enabled: Bool?
+        var type: String?
+        var host: String?
+    }
+
+    struct Bluetooth: Decodable, Identifiable {
+        var name: String
+        var connected: Bool?
+        var battery: String?
+        var id: String { name }
     }
 
     struct Memory: Decodable {
@@ -25,6 +57,8 @@ struct StatusSnapshot: Decodable {
         var usedPercent: Double?
         var swapUsed: Int64?
         var swapTotal: Int64?
+        /// normal / warn / critical, empty when unknown.
+        var pressure: String?
     }
 
     struct Disk: Decodable, Identifiable {
@@ -67,6 +101,10 @@ struct StatusSnapshot: Decodable {
     var healthScore: Int?
     var healthScoreMsg: String?
     var cpu: CPU?
+    var gpu: [GPU]?
+    var thermal: Thermal?
+    var proxy: Proxy?
+    var bluetooth: [Bluetooth]?
     var memory: Memory?
     var disks: [Disk]?
     var trashSize: Int64?
@@ -115,9 +153,16 @@ struct InstalledApp: Decodable, Identifiable, Hashable {
 }
 
 enum Format {
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false // "0 KB", not "Zero KB"
+        return formatter
+    }()
+
     static func bytes(_ value: Int64?) -> String {
         guard let value else { return "--" }
-        return ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+        return byteFormatter.string(fromByteCount: value)
     }
 
     static func percent(_ value: Double?) -> String {
