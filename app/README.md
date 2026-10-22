@@ -4,6 +4,28 @@ A SwiftUI app for the Mole CLI in this repository. Burrow never deletes files
 itself: every cleanup, uninstall and optimization runs through the bundled `mo`,
 so Mole's protection rules, dry-run previews and operation log all apply.
 
+## Features
+
+| Area | What Burrow does | How |
+|---|---|---|
+| Status | Health score, CPU/memory/network/power history, disks, battery, GPU, Bluetooth, camera and microphone in use, top processes with details and quit, idle dev daemons | `mo status --json`, CoreAudio/CoreMediaIO, `ps`, `lsof` |
+| Analyze | Folder list or treemap, drill-down, reveal in Finder | `mo analyze --json` |
+| Clean | Preview, clean, whitelist, external drives | `mo clean`, Mole's whitelist functions |
+| AI data | Tool folder sizes, Mole's AI cache rows, old Claude Code / Codex conversations to Trash, agent worktrees (read-only) | Burrow (the one place it moves files, to Trash, logged in Mole's format) |
+| Build artifacts | Scan paths, per-artifact selection | `mo purge` menu, verified against Mole's list |
+| Optimize | Preview, run with admin prompt relay, performance diagnosis | `mo optimize` |
+| Installers | Select and delete | `mo installer` menu, verified against Mole's plan |
+| Uninstall | Plan, personal data choice, quit running apps first | `mo uninstall` in a PTY |
+| App updates | Homebrew casks and Sparkle feeds, ignore, update all | `brew outdated/upgrade`, appcasts |
+| Startup items | LaunchAgents/Daemons with state and broken programs | plists, `launchctl` (read-only) |
+| History | Sessions, per-run rows, deletions | `mo history --json`, operations.log |
+| Tools | Menu bar panel and metric, keep awake (pauses on low battery), Clean Screen, Doctor, eject drives, notifications, global shortcuts, launch at login | AppKit, IOKit, Carbon hot keys |
+
+Not included: fan control and battery charge limits (need a privileged helper
+that writes hardware settings), Wi-Fi low latency (needs a privileged process
+to keep AWDL down), and instant cleanup of an app dragged to the Trash (Mole
+cleans orphaned data after 30 days; uninstall through Burrow cleans at once).
+
 ## Build
 
 ```bash
