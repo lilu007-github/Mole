@@ -19,6 +19,7 @@ Task { @MainActor in
     MenuBarChecks.register()
     TreemapChecks.register()
     IdleChecks.register()
+    WorktreeChecks.register()
     LiveChecks.register()
     LiveChecks.registerBattery()
     let status = await Checks.run(filter: CommandLine.arguments.dropFirst().first)

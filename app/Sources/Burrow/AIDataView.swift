@@ -8,6 +8,7 @@ struct AIDataView: View {
                 AIInventorySection()
                 AIMoleCacheSection()
                 AISessionsSection()
+                AIWorktreesSection()
             }
             .padding(20)
         }
@@ -263,5 +264,66 @@ private struct AISessionsSection: View {
         selection.removeAll()
         working = false
         await scan()
+    }
+}
+
+// MARK: - Worktrees
+
+private struct AIWorktreesSection: View {
+    @State private var worktrees: [AIWorktree]?
+    @State private var sizes: [String: Int64] = [:]
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Claude Code、Codex 为并行任务创建的 git 工作树。是否还需要只有你知道：这里只列出会阻止删除的情况（未提交、未推送），Burrow 不会删除它们。")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let worktrees {
+                    if worktrees.isEmpty { Text("没有找到工作树。").foregroundStyle(.secondary) }
+                    ForEach(worktrees) { tree in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(PurgePaths.abbreviate(tree.path)).lineLimit(1).truncationMode(.middle)
+                                Text([tree.tool, tree.branch.map { "分支 \($0)" },
+                                      tree.modified.map { "更新于 \($0.formatted(date: .abbreviated, time: .omitted))" }]
+                                    .compactMap { $0 }.joined(separator: " · "))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if tree.blockers.isEmpty {
+                                    Text("没有未提交或未推送的内容").font(.caption).foregroundStyle(.secondary)
+                                } else {
+                                    Text(tree.blockers.joined(separator: "，")).font(.caption).foregroundStyle(.orange)
+                                }
+                            }
+                            Spacer()
+                            Text(sizes[tree.path].map { Format.bytes($0) } ?? "…").monospacedDigit().foregroundStyle(.secondary)
+                            Menu {
+                                Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: tree.path)]) }
+                                Button("拷贝删除命令（自己在终端运行）") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(tree.removeCommand, forType: .string)
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
+                        Divider()
+                    }
+                } else {
+                    ProgressView().frame(maxWidth: .infinity)
+                }
+            }
+        } label: {
+            Label("AI 工作树", systemImage: "arrow.triangle.branch")
+        }
+        .task {
+            let found = await Task.detached { AIWorktrees.scan() }.value
+            worktrees = found
+            for tree in found {
+                if let size = await AILocation.measure(tree.path) { sizes[tree.path] = size }
+            }
+        }
     }
 }

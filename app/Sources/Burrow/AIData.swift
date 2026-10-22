@@ -411,3 +411,105 @@ struct OperationLog {
         return formatter.string(from: .now)
     }
 }
+
+// MARK: - Worktrees (read-only)
+
+/// A git worktree an AI agent created (<repo>/.claude/worktrees/*,
+/// <repo>/.codex/worktrees/*, ~/.codex/worktrees/*). Following Mole's rule,
+/// staleness is not decidable: Burrow reports blockers only, never "safe".
+struct AIWorktree: Identifiable, Hashable {
+    var path: String
+    var tool: String
+    var branch: String?
+    var uncommitted: Int
+    /// nil when the branch has no upstream to compare with.
+    var unpushed: Int?
+    var size: Int64?
+    var modified: Date?
+    var id: String { path }
+
+    var blockers: [String] {
+        var list: [String] = []
+        if uncommitted > 0 { list.append("\(uncommitted) 个未提交的改动") }
+        if let unpushed, unpushed > 0 { list.append("\(unpushed) 个未推送的提交") }
+        if unpushed == nil { list.append("分支没有远程上游，提交可能只在本地") }
+        return list
+    }
+
+    var removeCommand: String { "git worktree remove \"\(path)\"" }
+}
+
+enum AIWorktrees {
+    /// Folders that hold project checkouts: purge scan paths plus ~/Developer,
+    /// never cloud drives or ~/Library (walking File Provider folders is slow
+    /// and can make the provider fetch content).
+    static func roots() -> [String] {
+        let home = NSHomeDirectory()
+        var roots = (PurgePaths.load() ?? ["~/Projects", "~/GitHub", "~/Code", "~/Developer"]).map(PurgePaths.expand)
+        roots.append(home + "/Developer")
+        return Array(Set(roots)).filter { root in
+            FileManager.default.fileExists(atPath: root) && !root.hasPrefix(home + "/Library")
+        }.sorted()
+    }
+
+    /// Projects are looked for at most `maxDepth` folders below a root; only
+    /// visible folders are entered, and each project's .claude/.codex is probed directly.
+    static let maxDepth = 3
+
+    static func scan() -> [AIWorktree] {
+        var found: [(String, String)] = []
+        let fm = FileManager.default
+        let global = NSHomeDirectory() + "/.codex/worktrees"
+        for name in (try? fm.contentsOfDirectory(atPath: global)) ?? [] { found.append((global + "/" + name, "Codex")) }
+
+        func visit(_ dir: String, depth: Int) {
+            for (folder, tool) in [(".claude/worktrees", "Claude Code"), (".codex/worktrees", "Codex")] {
+                let container = dir + "/" + folder
+                for entry in (try? fm.contentsOfDirectory(atPath: container)) ?? [] { found.append((container + "/" + entry, tool)) }
+            }
+            // A git checkout is a project: its own subfolders are source, not more projects.
+            guard depth < maxDepth, !fm.fileExists(atPath: dir + "/.git") else { return }
+            for child in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where !child.hasPrefix(".") {
+                guard !["node_modules", "build", "dist", "Library", "Applications"].contains(child) else { continue }
+                var isDirectory: ObjCBool = false
+                let path = dir + "/" + child
+                let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isSymbolicLinkKey, .isPackageKey])
+                guard fm.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue,
+                      values?.isSymbolicLink != true, values?.isPackage != true else { continue }
+                visit(path, depth: depth + 1)
+            }
+        }
+        for root in roots() { visit(root, depth: 0) }
+        var seen = Set<String>()
+        return found.filter { seen.insert($0.0).inserted }
+            .compactMap { path, tool in inspect(path, tool: tool) }
+            .sorted { ($0.modified ?? .distantPast) < ($1.modified ?? .distantPast) }
+    }
+
+    static func inspect(_ path: String, tool: String) -> AIWorktree? {
+        guard FileManager.default.fileExists(atPath: path + "/.git") else { return nil }
+        let branch = git(path, ["rev-parse", "--abbrev-ref", "HEAD"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = git(path, ["status", "--porcelain"]) ?? ""
+        let unpushed = git(path, ["rev-list", "--count", "@{u}..HEAD"]).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let modified = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        return AIWorktree(path: path, tool: tool, branch: branch,
+                          uncommitted: status.split(separator: "\n").count, unpushed: unpushed,
+                          size: nil, modified: modified)
+    }
+
+    private static func git(_ dir: String, _ arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", dir] + arguments
+        var env = ProcessInfo.processInfo.environment
+        env["GIT_OPTIONAL_LOCKS"] = "0" // reading status must not take the index lock
+        process.environment = env
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : nil
+    }
+}
