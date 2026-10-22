@@ -48,6 +48,30 @@ struct MenuBarView: View {
             Divider()
             keepAwakeSection
             Divider()
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(CleanScreen.durations, id: \.label) { option in
+                        Button(option.label) { CleanScreen.shared.start(duration: option.seconds) }
+                    }
+                } label: {
+                    Label("清洁屏幕", systemImage: "paintbrush")
+                }
+                .fixedSize()
+                Button {
+                    openWindow(id: "doctor")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Label("诊断", systemImage: "stethoscope")
+                }
+                Button {
+                    openWindow(id: "about")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Label("关于", systemImage: "info.circle")
+                }
+            }
+            .controlSize(.small)
+            Divider()
             HStack {
                 Button("打开 Burrow") {
                     openWindow(id: "main")

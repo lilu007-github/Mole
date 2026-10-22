@@ -76,6 +76,8 @@ struct StatusSnapshot: Decodable {
         var health: String?
         var cycleCount: Int?
         var timeLeft: String?
+        /// Health in percent of design capacity.
+        var capacity: Int?
     }
 
     struct Network: Decodable, Identifiable {
@@ -96,6 +98,7 @@ struct StatusSnapshot: Decodable {
 
     var host: String?
     var uptime: String?
+    var uptimeSeconds: Int?
     var procs: Int?
     var hardware: Hardware?
     var healthScore: Int?
