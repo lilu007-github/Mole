@@ -11,28 +11,33 @@ struct SlimView: View {
 
     private var apps: [SlimApp] { SlimApp.parse(session.allLines) }
 
+    private var headline: String {
+        if session.isRunning { return "正在扫描 App…" }
+        guard scanned else { return "精简 App" }
+        return SlimApp.summary(session.allLines) == nil ? "没有可以精简的 App" : "\(apps.count) 个 App 可以精简"
+    }
+
     private var chosenSize: Int64 {
         apps.filter { selection.contains($0.id) }.reduce(0) { $0 + HistoryReport.parseSize($1.size) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(session.isRunning ? "正在扫描 App…" : scanned ? (SlimApp.summary(session.allLines).map { _ in "\(apps.count) 个 App 可以精简" } ?? "没有可以精简的 App") : "精简 App")
-                        .font(.headline)
-                    Text("删掉 App 里给 Intel 芯片用的代码，只保留 Apple 芯片的部分。Mole 先在副本上精简并验证签名，原 App 移到废纸篓；App 更新后 Intel 代码会回来。")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(headline).font(.headline)
+                    Spacer()
+                    if session.isRunning { ProgressView().controlSize(.small) }
+                    Button(scanned ? "重新扫描" : "扫描") { scan() }.disabled(session.isRunning)
+                    Button(selection.isEmpty ? "精简所选…" : "精简 \(selection.count) 个（\(Format.bytes(chosenSize))）…") {
+                        job = SlimJob(names: selection, listed: apps)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selection.isEmpty || session.isRunning)
                 }
-                Spacer()
-                if session.isRunning { ProgressView().controlSize(.small) }
-                Button(scanned ? "重新扫描" : "扫描") { scan() }.disabled(session.isRunning)
-                Button(selection.isEmpty ? "精简所选…" : "精简 \(selection.count) 个（\(Format.bytes(chosenSize))）…") {
-                    job = SlimJob(names: selection, listed: apps)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(selection.isEmpty || session.isRunning)
+                Text("删掉 App 里给 Intel 芯片用的代码，只保留 Apple 芯片的部分。Mole 先在副本上精简并验证签名，原 App 移到废纸篓；App 更新后 Intel 代码会回来。")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
             .padding(12)
             Divider()
@@ -43,8 +48,12 @@ struct SlimView: View {
         .sheet(item: $job, onDismiss: { selection.removeAll(); scan() }) { SlimSheet(job: $0) }
     }
 
-    @ViewBuilder
     private var content: some View {
+        contentBody.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var contentBody: some View {
         if !scanned {
             ContentUnavailableView {
                 Label("还没有扫描", systemImage: "scissors")
