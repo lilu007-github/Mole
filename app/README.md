@@ -33,6 +33,9 @@ executable. Parsing and AI-cleanup checks use hand-written samples and a fixture
 home folder. Live checks run this checkout's `mole`, only read-only commands and
 `--dry-run`s; Mole records those dry runs in its operation log as usual.
 
+GitHub Actions (`.github/workflows/burrow.yml`) runs the offline checks and
+builds an ad-hoc signed `Burrow.zip` artifact on every push that touches `app/`.
+
 ## Keeping up with Mole
 
 ```bash

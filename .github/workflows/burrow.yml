@@ -1,0 +1,44 @@
+name: Burrow
+
+# Builds the Burrow app in app/ and runs its offline checks. Live checks run
+# the Mole CLI against the real Mac and stay local (app/scripts/run-checks.sh).
+on:
+  push:
+    paths: ["app/**", ".github/workflows/burrow.yml"]
+  pull_request:
+    paths: ["app/**", ".github/workflows/burrow.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Offline checks
+        env:
+          BURROW_SKIP_LIVE: "1"
+        run: app/scripts/run-checks.sh
+
+      - name: Build Burrow.app (ad-hoc signed)
+        run: app/build-app.sh
+
+      - name: Package
+        run: |
+          cd app/build
+          ditto -c -k --keepParent Burrow.app Burrow.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Burrow-${{ github.sha }}
+          path: app/build/Burrow.zip
+          retention-days: 14
