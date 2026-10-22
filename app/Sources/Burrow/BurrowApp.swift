@@ -61,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct ContentView: View {
+    @State private var onboarding = false
     // Reopens on the page used last.
     @AppStorage("lastPage") private var lastPage: SidebarItem = .status
 
@@ -93,6 +94,9 @@ struct ContentView: View {
                 }
             }
         }
+        .sheet(isPresented: $onboarding) { OnboardingView() }
+        .onAppear { if !UserDefaults.standard.bool(forKey: OnboardingView.shownKey) { onboarding = true } }
+        .onReceive(NotificationCenter.default.publisher(for: OnboardingView.showNotification)) { _ in onboarding = true }
     }
 }
 

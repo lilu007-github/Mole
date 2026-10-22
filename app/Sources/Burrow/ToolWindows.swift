@@ -194,6 +194,10 @@ struct ToolCommands: Commands {
         }
         CommandGroup(replacing: .help) {
             Link("Burrow 使用说明", destination: URL(string: "https://github.com/lilu007-github/Mole/blob/feature/gui/app/README.md")!)
+            Button("欢迎与权限指南") {
+                MainWindow.show(openWindow)
+                NotificationCenter.default.post(name: OnboardingView.showNotification, object: nil)
+            }
             Button("运行诊断并拷贝报告…") { open("doctor") }
             Divider()
             Link("Mole CLI 文档", destination: URL(string: "https://github.com/tw93/Mole#readme")!)
