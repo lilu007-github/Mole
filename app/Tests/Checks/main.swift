@@ -9,6 +9,7 @@ Task { @MainActor in
     PurgeChecks.register()
     UninstallChecks.register()
     ToolChecks.register()
+    ProcessChecks.register()
     LiveChecks.register()
     let status = await Checks.run(filter: CommandLine.arguments.dropFirst().first)
     removeFixtures()

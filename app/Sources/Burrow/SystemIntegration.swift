@@ -88,3 +88,37 @@ final class GlobalShortcuts {
     /// How many shortcuts are currently registered (another app may own a combination).
     var registeredCount: Int { refs.count }
 }
+
+/// Quitting a process from the Status page. Burrow never elevates: processes
+/// owned by another user or by the system fail with EPERM and are reported.
+enum ProcessControl {
+    /// Quitting these logs the user out, hangs the Mac or is refused by the kernel.
+    static let protectedNames: Set<String> = [
+        "kernel_task", "launchd", "WindowServer", "loginwindow", "Finder", "Dock", "SystemUIServer",
+        "ControlCenter", "coreaudiod", "mds", "mds_stores", "opendirectoryd", "securityd", "syspolicyd", "tccd",
+    ]
+
+    static func refusal(pid: Int, name: String) -> String? {
+        if pid <= 1 { return "系统核心进程不能结束。" }
+        if pid == Int(ProcessInfo.processInfo.processIdentifier) { return "这是 Burrow 自己。" }
+        if protectedNames.contains(name) { return "\(name) 是 macOS 的关键进程，结束它可能导致注销或卡死，Burrow 不会结束它。" }
+        return nil
+    }
+
+    /// Asks a GUI app to quit through AppKit (it may save documents); other
+    /// processes get SIGTERM, or SIGKILL when forced. Returns an error message.
+    static func quit(pid: Int, name: String, force: Bool) -> String? {
+        if let refusal = refusal(pid: pid, name: name) { return refusal }
+        if let app = NSRunningApplication(processIdentifier: pid_t(pid)) {
+            return (force ? app.forceTerminate() : app.terminate()) ? nil : "\(name) 没有响应退出请求。"
+        }
+        guard kill(pid_t(pid), force ? SIGKILL : SIGTERM) == 0 else {
+            switch errno {
+            case EPERM: return "\(name) 属于系统或其他用户，需要管理员权限；Burrow 不会提升权限结束它。"
+            case ESRCH: return "\(name) 已经不在运行。"
+            default: return String(cString: strerror(errno))
+            }
+        }
+        return nil
+    }
+}

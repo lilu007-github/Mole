@@ -1,8 +1,11 @@
+import AppKit
 import Charts
 import SwiftUI
 
 struct StatusView: View {
     private let monitor = StatusMonitor.shared
+    @State private var quitting: (process: StatusSnapshot.Process, force: Bool)?
+    @State private var quitMessage: String?
 
     var body: some View {
         ScrollView {
@@ -266,9 +269,43 @@ struct StatusView: View {
                 TableColumn("内存") { Text(Format.bytes($0.memoryBytes)).monospacedDigit() }.width(90)
             }
             .frame(height: 220)
+            .contextMenu(forSelectionType: StatusSnapshot.Process.ID.self) { ids in
+                if let process = processes.first(where: { ids.contains($0.id) }) {
+                    Button("退出 \(process.name)") { quitting = (process, false) }
+                        .disabled(ProcessControl.refusal(pid: process.pid, name: process.name) != nil)
+                    Button("强制退出 \(process.name)") { quitting = (process, true) }
+                        .disabled(ProcessControl.refusal(pid: process.pid, name: process.name) != nil)
+                    Divider()
+                    Button("拷贝 PID") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(String(process.pid), forType: .string)
+                    }
+                }
+            }
+            if let quitMessage {
+                Text(quitMessage).font(.caption).foregroundStyle(.secondary)
+            }
         } label: {
-            Label("占用最高的进程", systemImage: "list.number")
+            Label("占用最高的进程（右键可退出）", systemImage: "list.number")
         }
+        .confirmationDialog(quitTitle, isPresented: Binding(get: { quitting != nil }, set: { if !$0 { quitting = nil } })) {
+            Button(quitting?.force == true ? "强制退出" : "退出", role: .destructive) {
+                guard let target = quitting else { return }
+                let error = ProcessControl.quit(pid: target.process.pid, name: target.process.name, force: target.force)
+                quitMessage = error ?? "已向 \(target.process.name) 发送退出请求。"
+                quitting = nil
+            }
+            Button("取消", role: .cancel) { quitting = nil }
+        } message: {
+            Text(quitting?.force == true
+                ? "强制退出不会给程序保存的机会，未保存的内容会丢失。"
+                : "程序会像从 Dock 退出一样正常关闭，可能会提示保存。")
+        }
+    }
+
+    private var quitTitle: String {
+        guard let target = quitting else { return "" }
+        return "\(target.force ? "强制退出" : "退出") \(target.process.name)（PID \(target.process.pid)）？"
     }
 
     private func scoreColor(_ score: Int?) -> Color {
