@@ -68,9 +68,30 @@ struct TreemapView: View {
 
     private static let palette: [Color] = [.blue, .teal, .indigo, .purple, .cyan, .mint, .green, .orange]
 
+    private var shown: [AnalyzeResult.Entry] { Array(entries.filter { $0.size > 0 }.prefix(60)) }
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            tiles
+            // Small tiles have no room for a label; name whatever the pointer is on.
+            Group {
+                if let entry = shown.first(where: { $0.id == hovered }) {
+                    Text("\(entry.name) · \(Format.bytes(entry.size))" + (entry.isDir ? "，点击进入" : ""))
+                } else {
+                    Text("把鼠标移到方块上查看名称和大小")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var tiles: some View {
         GeometryReader { geo in
-            let shown = Array(entries.filter { $0.size > 0 }.prefix(60))
+            let shown = self.shown
             let rects = Treemap.layout(shown.map { Double($0.size) }, in: CGRect(origin: .zero, size: geo.size))
             ZStack(alignment: .topLeading) {
                 ForEach(Array(shown.enumerated()), id: \.element.id) { index, entry in
@@ -95,6 +116,6 @@ struct TreemapView: View {
                 }
             }
         }
-        .padding(8)
+        .padding([.horizontal, .top], 8)
     }
 }
