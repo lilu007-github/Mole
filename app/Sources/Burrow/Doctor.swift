@@ -198,3 +198,32 @@ enum Doctor {
         return "未知"
     }
 }
+
+/// The "Performance diagnosis" block `mo optimize --dry-run` prints before its tasks.
+enum PerformanceDiagnosis {
+    struct Finding: Hashable {
+        var icon: String
+        var text: String
+        /// Indented lines under it, e.g. the top memory users.
+        var details: [String]
+    }
+
+    static func parse(_ lines: [String]) -> [Finding] {
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "Performance diagnosis" })
+        else { return [] }
+        var findings: [Finding] = []
+        for line in lines[(start + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("➤") || trimmed.hasPrefix("====") { break }
+            guard !trimmed.isEmpty else { continue }
+            let indent = line.prefix { $0 == " " }.count
+            if indent <= 2, let first = trimmed.unicodeScalars.first, !CharacterSet.alphanumerics.contains(first) {
+                findings.append(Finding(icon: String(trimmed.prefix(1)),
+                                        text: trimmed.dropFirst().trimmingCharacters(in: .whitespaces), details: []))
+            } else if !findings.isEmpty {
+                findings[findings.count - 1].details.append(trimmed)
+            }
+        }
+        return findings
+    }
+}

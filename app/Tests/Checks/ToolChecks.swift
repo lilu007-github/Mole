@@ -39,6 +39,29 @@ enum ToolChecks {
             }
         }
 
+        Checks.add("doctor", "performance diagnosis block parses with its details") {
+            let lines = parse("""
+            Optimize
+
+            Performance diagnosis
+              ◎ Likely bottleneck: WindowServer (~43.5% CPU sustained)
+              ⊙ Desktop composition is busy. When another family is higher, treat this as a symptom.
+              ◎ Memory pressure: swap 9.14GB of 9.66GB used (94%), 39% free
+                Claude Helper (Renderer)    385.3MB
+                Google Chrome               271.1MB
+
+            ➤ Finder Cache Refresh
+              → QuickLook thumbnails refreshed
+
+            """)
+            let findings = PerformanceDiagnosis.parse(lines)
+            expect(findings.count == 3, "\(findings.map(\.text))")
+            expect(findings.first?.text.hasPrefix("Likely bottleneck: WindowServer") == true, "\(findings.first?.text ?? "")")
+            expect(findings.last?.details == ["Claude Helper (Renderer)    385.3MB", "Google Chrome               271.1MB"],
+                   "\(findings.last?.details ?? [])")
+            expect(PerformanceDiagnosis.parse(["➤ Finder Cache Refresh"]).isEmpty, "no block")
+        }
+
         Checks.add("doctor", "a healthy snapshot reports no problems and copies as text") {
             let json = #"""
             {"uptime":"1d","uptime_seconds":90000,"memory":{"pressure":"normal"},

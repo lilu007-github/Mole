@@ -87,6 +87,8 @@ struct DoctorView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var report: DoctorReport?
     @State private var copied = false
+    @State private var diagnosis = TerminalSession()
+    @State private var diagnosed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -110,6 +112,27 @@ struct DoctorView: View {
             Divider()
             if let report {
                 List {
+                    Section("性能诊断") {
+                        if !diagnosed {
+                            Button("运行性能诊断（约 20 秒，只读）") {
+                                diagnosed = true
+                                diagnosis.start(["optimize", "--dry-run"], usePTY: false)
+                            }
+                        } else if diagnosis.isRunning && PerformanceDiagnosis.parse(diagnosis.allLines).isEmpty {
+                            HStack { ProgressView().controlSize(.small); Text("Mole 正在分析…").foregroundStyle(.secondary) }
+                        } else {
+                            let findings = PerformanceDiagnosis.parse(diagnosis.allLines)
+                            if findings.isEmpty { Text("没有发现明显的性能问题。").foregroundStyle(.secondary) }
+                            ForEach(findings, id: \.self) { finding in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(finding.icon) \(finding.text)")
+                                    ForEach(finding.details, id: \.self) {
+                                        Text($0).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     ForEach(report.sections) { section in
                         Section(section.title) {
                             ForEach(section.items) { item in row(item) }
