@@ -28,6 +28,7 @@ struct OptimizeView: View {
                     .padding(12)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .navigationTitle("优化")
         .confirmationDialog("开始优化？", isPresented: $confirming) {
             Button("优化") { run(.optimize) }

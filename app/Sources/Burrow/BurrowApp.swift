@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum SidebarItem: String, CaseIterable, Identifiable {
-    case status, analyze, clean, optimize, installer, uninstall
+    case status, analyze, clean, ai, optimize, installer, uninstall
 
     var id: String { rawValue }
 
@@ -51,6 +51,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .status: "系统状态"
         case .analyze: "磁盘分析"
         case .clean: "清理"
+        case .ai: "AI 数据"
         case .optimize: "优化"
         case .installer: "安装包"
         case .uninstall: "卸载应用"
@@ -62,6 +63,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .status: "gauge.with.dots.needle.67percent"
         case .analyze: "chart.pie"
         case .clean: "sparkles"
+        case .ai: "brain"
         case .optimize: "wand.and.stars"
         case .installer: "shippingbox"
         case .uninstall: "trash"
@@ -70,11 +72,16 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    @State private var selection: SidebarItem? = .status
+    // Reopens on the page used last.
+    @AppStorage("lastPage") private var lastPage: SidebarItem = .status
+
+    private var selection: Binding<SidebarItem?> {
+        Binding(get: { lastPage }, set: { if let page = $0 { lastPage = page } })
+    }
 
     var body: some View {
         NavigationSplitView {
-            List(SidebarItem.allCases, selection: $selection) { item in
+            List(SidebarItem.allCases, selection: selection) { item in
                 Label(item.title, systemImage: item.symbol).tag(item)
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
@@ -82,10 +89,11 @@ struct ContentView: View {
             if MoleCLI.executableURL == nil {
                 MissingCLIView()
             } else {
-                switch selection ?? .status {
+                switch lastPage {
                 case .status: StatusView()
                 case .analyze: AnalyzeView()
                 case .clean: CleanView()
+                case .ai: AIDataView()
                 case .optimize: OptimizeView()
                 case .installer: InstallerView()
                 case .uninstall: UninstallView()

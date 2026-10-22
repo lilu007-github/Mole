@@ -23,6 +23,7 @@ struct CleanView: View {
             }
             content
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .navigationTitle("清理")
         .confirmationDialog("开始清理？", isPresented: $confirming) {
             Button("清理", role: .destructive) { run(.clean) }
