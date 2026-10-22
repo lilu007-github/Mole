@@ -193,6 +193,13 @@ struct ToolCommands: Commands {
             Button("关于 Burrow") { open("about") }
             Button("检查 Mole 更新…") { open("about") }
         }
+        CommandGroup(replacing: .help) {
+            Link("Burrow 使用说明", destination: URL(string: "https://github.com/lilu007-github/Mole/blob/feature/gui/app/README.md")!)
+            Button("运行诊断并拷贝报告…") { open("doctor") }
+            Divider()
+            Link("Mole CLI 文档", destination: URL(string: "https://github.com/tw93/Mole#readme")!)
+            Link("报告 Mole CLI 的问题（仅限命令行本身）", destination: URL(string: "https://github.com/tw93/Mole/issues")!)
+        }
         CommandMenu("工具") {
             Menu("清洁屏幕") {
                 ForEach(CleanScreen.durations, id: \.label) { option in
