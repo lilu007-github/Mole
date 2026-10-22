@@ -136,6 +136,8 @@ enum DockIcon {
 enum AppSettings {
     static let commandQClosesKey = "commandQClosesToMenuBar"
     static let appearanceKey = "appearance"
+    /// Set by the menu bar panel's 退出 so a real quit always goes through.
+    @MainActor static var quitRequested = false
 
     enum Appearance: String, CaseIterable, Identifiable {
         case system, light, dark

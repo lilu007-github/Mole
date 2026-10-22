@@ -119,7 +119,7 @@ struct MenuBarView: View {
                 Spacer()
                 SettingsLink { Image(systemName: "gearshape") }
                 Button("退出") {
-                    AppDelegate.quitRequested = true
+                    AppSettings.quitRequested = true
                     NSApp.terminate(nil)
                 }
             }
