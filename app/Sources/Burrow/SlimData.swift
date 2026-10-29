@@ -136,12 +136,12 @@ enum SlimMenuDriver {
         return Frame(cursorName: String(cursor.1), total: total, selected: selected)
     }
 
-    /// Names in Mole's "Apps to slim:" list, rows "  ✓ Name , 578.4MB".
+    /// Names in Mole's "Apps to slim:" list, rows "◎ Name , 578.4MB", with " [Running]" after an open app.
     static func confirmedNames(_ lines: [String]) -> [String] {
         guard let start = lines.lastIndex(where: { $0.hasPrefix("Apps to slim:") }) else { return [] }
         var names: [String] = []
         for line in lines[(start + 1)...] {
-            guard let row = line.firstMatch(of: #/^  ✓ (.*?)\s*, \S+\s*$/#) else { break }
+            guard let row = line.firstMatch(of: #/^◎ (.*?)\s*, \S+(?: \[Running\])?\s*$/#) else { break }
             names.append(String(row.1))
         }
         return names

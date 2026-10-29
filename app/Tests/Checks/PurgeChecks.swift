@@ -113,12 +113,17 @@ enum PurgeChecks {
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data((0..<bytes).map { UInt8($0 % 251) }).write(to: url)
         }
+        // Mole only offers node_modules that npm installed: a lockfile plus npm's install record.
         try file("alpha/package.json", bytes: 2)
+        try file("alpha/package-lock.json", bytes: 2)
+        try file("alpha/node_modules/.package-lock.json", bytes: 2)
         try file("alpha/node_modules/pkg/index.js", bytes: 200_000)
         try file("beta/requirements.txt", bytes: 2)
         try file("beta/.venv/pyvenv.cfg", bytes: 20)
         try file("beta/.venv/lib/a.so", bytes: 100_000)
         try file("gamma/package.json", bytes: 2)
+        try file("gamma/package-lock.json", bytes: 2)
+        try file("gamma/node_modules/.package-lock.json", bytes: 2)
         try file("gamma/dist/app.js", bytes: 50_000)
         try file("gamma/node_modules/x/i.js", bytes: 30_000)
         // Mole skips artifacts touched in the last week.

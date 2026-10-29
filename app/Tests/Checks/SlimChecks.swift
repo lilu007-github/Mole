@@ -37,8 +37,9 @@ enum SlimChecks {
             expect(SlimMenuDriver.frame(["Select apps to slim  0/3 selected", "➤ ○ Comet   1MB"]) == nil,
                    "a frame without its key legend is still being drawn")
             let names = SlimMenuDriver.confirmedNames([
-                "Apps to slim:", "  ✓ Comet , 578.4MB", "  ✓ VooV Meeting , 227KB", "",
+                "Apps to slim:", "◎ Comet , 578.4MB", "◎ VooV Meeting , 227KB [Running]", "",
                 "Originals move to the Trash. App updates bring the Intel code back.",
+                "Running apps are skipped, quit them before you confirm.",
                 "➤ Slim 2 apps, 578.6MB  Enter confirm, ESC cancel: ",
             ])
             expect(names == ["Comet", "VooV Meeting"], "\(names)")
@@ -60,7 +61,7 @@ enum SlimChecks {
             let problem = await SlimMenuDriver.select(chosen, among: listed, in: session) { _ in }
             expect(problem == nil, (problem ?? "") + "\n" + session.allLines.suffix(40).joined(separator: "\n"))
             expect(SlimMenuDriver.confirmedNames(session.allLines) == ["Steam"], "\(SlimMenuDriver.confirmedNames(session.allLines))")
-            expect(session.currentLine.contains("Slim 1 apps"), session.currentLine)
+            expect(session.currentLine.contains("Slim 1 app,"), session.currentLine)
             session.send("\u{1b}")
             await LiveChecks.waitForExit(session, seconds: 30)
             let executable = root.appendingPathComponent("Applications/Steam.app/Contents/MacOS")
