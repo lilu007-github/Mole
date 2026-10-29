@@ -1053,7 +1053,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 note_activity() { :; }
-pgrep() { [[ "$1" == "-x" && "$2" == "swift-frontend" ]]; }
+pgrep() { [[ "$1" == -*x && "|$2|" == *"|swift-frontend|"* ]]; }
 safe_remove() { echo "UNEXPECTED_SAFE_REMOVE:$1"; return 0; }
 safe_clean() { echo "UNEXPECTED_SAFE_CLEAN:$1"; return 0; }
 clean_xcode_device_support "$HOME/OwnedDeviceSupport" "iOS DeviceSupport"
@@ -1105,7 +1105,7 @@ source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 note_activity() { :; }
 pgrep() {
-    [[ "$1" == "-x" && "$2" == "Simulator" ]]
+    [[ "$1" == -*x && "|$2|" == *"|Simulator|"* ]] && echo "101 Simulator"
 }
 debug_log() { echo "DEBUG:$*"; }
 safe_sudo_remove() { echo "UNEXPECTED_SAFE_SUDO_REMOVE"; }
@@ -1186,7 +1186,7 @@ EOF
 
     [ "$status" -eq 0 ] || return 1
     [[ "$output" == *"Xcode Simulator system cache · skipped (process state unknown)"* ]] || return 1
-    [[ "$output" == *"DEBUG:CoreSimulator process check failed: Xcode (exit=2)"* ]] || return 1
+    [[ "$output" == *"DEBUG:CoreSimulator process check failed (exit=2)"* ]] || return 1
     [[ "$output" != *"UNEXPECTED_SAFE_SUDO_REMOVE"* ]] || return 1
 }
 
@@ -1196,8 +1196,11 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 debug_log() { :; }
+# One pgrep covers every name; Xcode stays running so a later name in the
+# probe order proves the first running one in that order is reported.
 pgrep() {
-    [[ "$1" == "$EXPECTED_MODE" && "$2" == "$EXPECTED_PATTERN" ]]
+    [[ "$1" == -*x && "|$2|" == *"|$EXPECTED_PATTERN|"* ]] || return 1
+    printf '7 %s\n' "$EXPECTED_PATTERN"
 }
 
 while IFS='|' read -r EXPECTED_MODE EXPECTED_PATTERN expected_label; do
@@ -1231,11 +1234,18 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 note_activity() { :; }
+# Emulates one process table, so a probe that groups names still only sees
+# these persistent services and generic compilers.
 pgrep() {
-    case "$2" in
-        CoreSimulatorService | simdiskimaged | com.apple.CoreSimulator | XCBBuildService | swift-frontend) return 0 ;;
-        *) return 1 ;;
-    esac
+    local running=" CoreSimulatorService simdiskimaged com.apple.CoreSimulator XCBBuildService swift-frontend "
+    local name found=1 IFS='|'
+    for name in $2; do
+        if [[ "$running" == *" $name "* ]]; then
+            printf '9 %s\n' "$name"
+            found=0
+        fi
+    done
+    return "$found"
 }
 _coresimulator_booted_device_state() { return 1; }
 has_sudo_session() { return 0; }
@@ -1338,7 +1348,7 @@ source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
 debug_log() { :; }
 pgrep() {
-    [[ -e "$HOME/foreground-started" && "$1" == "-x" && "$2" == "xcodebuild" ]]
+    [[ -e "$HOME/foreground-started" && "$1" == -*x && "|$2|" == *"|xcodebuild|"* ]]
 }
 _coresimulator_booted_device_state() {
     touch "$HOME/foreground-started"
@@ -1968,6 +1978,44 @@ EOF
     [[ "$output" != *"$HOME/Library/Application Support/Claude/pending-uploads"* ]] || return 1
     [[ "$output" == *"$HOME/.cache/opencode"* ]] || return 1
     [[ "$output" != *"$HOME/.claude/shell-snapshots"* ]]
+}
+
+@test "developer cleanup stops after a Cursor log scan signal but not a timeout" {
+    for scan_rc in 0 1 124 130 143; do
+        run env HOME="$HOME/cursor-scan-$scan_rc" PROJECT_ROOT="$PROJECT_ROOT" SCAN_RC="$scan_rc" \
+            MOLE_TEST_NO_AUTH=1 MOLE_CURRENT_COMMAND=clean /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+mkdir -p "$HOME/.local/share/cursor-agent"
+safe_clean() { :; }
+clean_antigravity_caches() { :; }
+clean_agent_browser_old_chrome() { :; }
+clean_codex_desktop_caches() { :; }
+clean_codex_runtimes() { :; }
+clean_codex_desktop_staging() { :; }
+clean_codex_daemon_releases() { :; }
+clean_codex_crashpad_pending() { :; }
+clean_codex_marketplace_staging() { :; }
+clean_codex_cli() { :; }
+safe_find_delete() { echo SCAN_REACHED; return "$SCAN_RC"; }
+clean_chrome_devtools_mcp_caches() { echo NEXT_CACHE; }
+rc=0; _run_developer_cleanup_step clean_dev_misc || rc=$?
+printf 'RC=%s STICKY=%s\n' "$rc" "${MOLE_CLEAN_CANCEL_STATUS:-0}"
+EOF
+        [ "$status" -eq 0 ] || return 1
+        [[ "$output" == *SCAN_REACHED* ]] || return 1
+        case "$scan_rc" in
+            130 | 143)
+                [[ "$output" == *"RC=$scan_rc STICKY=$scan_rc"* ]] || return 1
+                [[ "$output" != *NEXT_CACHE* ]] || return 1
+                ;;
+            *)
+                [[ "$output" == *"RC=0 STICKY=0"* ]] || return 1
+                [[ "$output" == *NEXT_CACHE* ]] || return 1
+                ;;
+        esac
+    done
 }
 
 @test "clean_dev_mobile leaves an idle section when no unavailable simulator exists" {

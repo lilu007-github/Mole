@@ -2,6 +2,29 @@
 # Developer Tools Cleanup Module
 set -euo pipefail
 
+# Owner commands follow configured roots, so lexical policy alone cannot
+# protect a cache reached through a directory alias. Resolve the existing
+# prefix even when the owner has not created the final cache directory yet.
+owner_cache_root_is_safe() {
+    local cache_root="${1%/}"
+    validate_path_for_deletion "$cache_root" > /dev/null 2>&1 || return $?
+    is_path_whitelisted "$cache_root" && return 1
+
+    local existing="$cache_root" suffix="" physical_root=""
+    while [[ ! -e "$existing" ]]; do
+        [[ ! -L "$existing" && "$existing" != / && -n "$existing" ]] || return 1
+        suffix="/${existing##*/}$suffix"
+        existing="${existing%/*}"
+        [[ -n "$existing" ]] || existing=/
+    done
+    [[ -d "$existing" ]] || return 1
+    physical_root=$(cd -P "$existing" 2> /dev/null && pwd -P) || return $?
+    physical_root="${physical_root%/}$suffix"
+    validate_path_for_deletion "$physical_root" > /dev/null 2>&1 || return $?
+    is_path_whitelisted "$physical_root" && return 1
+    return 0
+}
+
 # Tool cache helper (respects DRY_RUN and whitelist).
 # Args:
 #   $1 = description (display name)
@@ -29,6 +52,17 @@ clean_tool_cache() {
         fi
         log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$cache_path" "whitelist"
         return 0
+    fi
+
+    if [[ -n "$cache_path" && "${1:-}" != ":" ]]; then
+        local root_rc=0
+        owner_cache_root_is_safe "$cache_path" || root_rc=$?
+        mole_rc_signal "$root_rc" && return "$root_rc"
+        if [[ $root_rc -ne 0 ]]; then
+            debug_log "$description kept: cache root is protected or unresolved"
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$cache_path" "protected or unresolved cache root"
+            return 0
+        fi
     fi
 
     if [[ "$DRY_RUN" != "true" ]]; then
@@ -319,6 +353,12 @@ clean_conda_metadata_caches() {
             conda_pkg_roots+=("$root")
         done
         conda_cache_whitelisted "${conda_pkg_roots[@]}" && return 0
+        for root in "${conda_pkg_roots[@]}"; do
+            local root_rc=0
+            owner_cache_root_is_safe "$root" || root_rc=$?
+            mole_rc_signal "$root_rc" && return "$root_rc"
+            [[ $root_rc -eq 0 ]] || return 0
+        done
         clean_tool_cache "conda index/tarball/log caches" "${conda_pkg_roots[0]}" \
             run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" conda clean --yes --index-cache --tarballs --logfiles || return $?
         return 0
@@ -514,9 +554,9 @@ clean_dev_npm() {
         fi
     fi
 
-    # These residual directories are not removed by `npm cache clean --force`
-    local -a npm_residual_dirs=("_cacache" "_npx" "_logs" "_prebuilds")
-    local -a npm_descriptions=("npm cache directory" "npm npx cache" "npm logs" "npm prebuilds")
+    # Keep _npx: running commands can still read its installed packages.
+    local -a npm_residual_dirs=("_cacache" "_logs" "_prebuilds")
+    local -a npm_descriptions=("npm cache directory" "npm logs" "npm prebuilds")
 
     # Clean default npm cache path
     local i
@@ -868,7 +908,7 @@ clean_dev_python() {
     safe_clean ~/.cache/mypy/* "MyPy cache"
     safe_clean ~/.pytest_cache/* "Pytest cache"
     clean_pyinstaller_bincache
-    safe_clean ~/.jupyter/runtime/* "Jupyter runtime cache"
+    # Jupyter runtime files hold active kernel/server connections, not caches.
     # Hugging Face, PyTorch, TensorFlow and Weights & Biases keep downloaded
     # model weights, datasets and run artifacts here. Their roots are not
     # blanket caches: Hugging Face's own prune warns that interruption can
@@ -1624,32 +1664,33 @@ _MOLE_XCODE_PROCESS_MATCH=""
 # launchd-managed services that can remain alive after Simulator exits, so
 # their existence alone is not evidence that a simulator is active (#1319).
 _coresimulator_cache_process_running() {
-    local match_mode match_pattern match_label probe_status
+    local name pid running listing probe_status=0
     _MOLE_XCODE_PROCESS_MATCH=""
 
-    while IFS='|' read -r match_mode match_pattern match_label; do
-        [[ -n "$match_pattern" ]] || continue
-        if pgrep "$match_mode" "$match_pattern" > /dev/null 2>&1; then
-            _MOLE_XCODE_PROCESS_MATCH="$match_label"
-            debug_log "CoreSimulator process detected: $match_label"
-            return 0
-        else
-            probe_status=$?
-        fi
-        if [[ $probe_status -ne 1 ]]; then
-            debug_log "CoreSimulator process check failed: $match_label (exit=$probe_status)"
-            return 2
-        fi
-    done << 'EOF'
--x|Xcode|Xcode
--x|Simulator|Simulator
--x|xcodebuild|xcodebuild
--x|xctest|xctest
--x|XCTRunner|XCTRunner
--x|simctl|simctl
-EOF
+    mole_pgrep_any -x Xcode -x Simulator -x xcodebuild -x xctest \
+        -x XCTRunner -x simctl || probe_status=$?
+    if [[ $probe_status -eq 1 ]]; then
+        return 1
+    elif [[ $probe_status -ne 0 ]]; then
+        debug_log "CoreSimulator process check failed (exit=$probe_status)"
+        return 2
+    fi
 
-    return 1
+    # Name the first running owner in probe order for the skip message.
+    local label_status=0
+    listing=$(pgrep -lx 'Xcode|Simulator|xcodebuild|xctest|XCTRunner|simctl' 2> /dev/null) || label_status=$?
+    debug_log "CoreSimulator owner name probe exit=$label_status"
+    for name in Xcode Simulator xcodebuild xctest XCTRunner simctl; do
+        while read -r pid running; do
+            if [[ "$running" == "$name" ]]; then
+                _MOLE_XCODE_PROCESS_MATCH="$name"
+                break 2
+            fi
+        done <<< "$listing"
+    done
+    _MOLE_XCODE_PROCESS_MATCH="${_MOLE_XCODE_PROCESS_MATCH:-Xcode or Simulator tools}"
+    debug_log "CoreSimulator process detected: $_MOLE_XCODE_PROCESS_MATCH"
+    return 0
 }
 
 # Return 0 when simctl reports a booted device, 1 for a valid empty result, and
@@ -1764,59 +1805,6 @@ _xctest_devices_activity_state() {
 
 _xctest_devices_delete_guard_allows() {
     mole_clean_process_guard _xctest_devices_activity_state "Xcode, XCTest, or Simulator started"
-}
-
-_dev_process_delete_guard_allows() {
-    # safe_clean_guarded passes the leaf currently at its deletion boundary.
-    # Keep it in dynamic scope so compound probes such as the Cargo root guard
-    # can bind that exact object without changing ordinary process probes.
-    local _MOLE_DEV_GUARDED_PATH="${1:-}"
-    mole_clean_process_guard \
-        "$_MOLE_DEV_PROCESS_GUARD_PROBE" \
-        "$_MOLE_DEV_PROCESS_GUARD_FAMILY started" \
-        "${_MOLE_DEV_PROCESS_GUARD_UNKNOWN_REASON:-process state unknown}"
-}
-
-_dev_report_process_guard_stop() {
-    local display_name="$1"
-    local family="$2"
-    local reason="$3"
-
-    if [[ "$reason" == "process state unknown" || "$reason" == "process or cache path state unknown" ]]; then
-        echo -e "  ${GRAY}${ICON_WARNING}${NC} ${display_name} · stopped (${reason})"
-        note_activity
-    else
-        mole_defer_cleanup_family "$family"
-    fi
-}
-
-# Bind a tri-state process probe to safe_clean's post-size boundary. The local
-# guard state is intentionally dynamic so Bash 3.2 callbacks can read it.
-_dev_safe_clean_process_guarded() {
-    local probe="$1"
-    local family="$2"
-    local display_name="$3"
-    shift 3
-    local _MOLE_DEV_PROCESS_GUARD_PROBE="$probe"
-    local _MOLE_DEV_PROCESS_GUARD_FAMILY="$family"
-    local _MOLE_CLEAN_GUARD_REASON="${family} started"
-
-    if ! declare -f safe_clean_guarded > /dev/null 2>&1; then
-        if ! _dev_process_delete_guard_allows; then
-            _dev_report_process_guard_stop "$display_name" "$family" "$_MOLE_CLEAN_GUARD_REASON"
-            return 1
-        fi
-        safe_clean "$@"
-        return $?
-    fi
-
-    local guarded_rc=0
-    safe_clean_guarded _dev_process_delete_guard_allows "$@" || guarded_rc=$?
-    if [[ $guarded_rc -eq 75 ]]; then
-        _dev_report_process_guard_stop "$display_name" "$family" "$_MOLE_CLEAN_GUARD_REASON"
-        return 1
-    fi
-    return "$guarded_rc"
 }
 
 _dev_clean_service_worker_process_guarded() {
@@ -5808,11 +5796,11 @@ clean_dev_misc() {
     safe_clean ~/Library/Caches/KSCrash/* "KSCrash reports"
     safe_clean ~/Library/Caches/com.crashlytics.data/* "Crashlytics data"
     if [[ -d ~/Library/Application\ Support/Antigravity ]]; then
-        safe_clean ~/Library/Application\ Support/Antigravity/Cache/* "Antigravity cache"
-        safe_clean ~/Library/Application\ Support/Antigravity/Code\ Cache/* "Antigravity code cache"
-        safe_clean ~/Library/Application\ Support/Antigravity/GPUCache/* "Antigravity GPU cache"
-        safe_clean ~/Library/Application\ Support/Antigravity/DawnGraphiteCache/* "Antigravity Dawn cache"
-        safe_clean ~/Library/Application\ Support/Antigravity/DawnWebGPUCache/* "Antigravity WebGPU cache"
+        mole_safe_clean_app_cache "Antigravity" ~/Library/Application\ Support/Antigravity/Cache/* "Antigravity cache"
+        mole_safe_clean_app_cache "Antigravity" ~/Library/Application\ Support/Antigravity/Code\ Cache/* "Antigravity code cache"
+        mole_safe_clean_app_cache "Antigravity" ~/Library/Application\ Support/Antigravity/GPUCache/* "Antigravity GPU cache"
+        mole_safe_clean_app_cache "Antigravity" ~/Library/Application\ Support/Antigravity/DawnGraphiteCache/* "Antigravity Dawn cache"
+        mole_safe_clean_app_cache "Antigravity" ~/Library/Application\ Support/Antigravity/DawnWebGPUCache/* "Antigravity WebGPU cache"
     fi
     # Antigravity browser profile caches (~/.gemini)
     clean_antigravity_caches
@@ -5820,31 +5808,31 @@ clean_dev_misc() {
     clean_agent_browser_old_chrome
     # Filo (Electron)
     if [[ -d ~/Library/Application\ Support/Filo ]]; then
-        safe_clean ~/Library/Application\ Support/Filo/production/Cache/* "Filo cache"
-        safe_clean ~/Library/Application\ Support/Filo/production/Code\ Cache/* "Filo code cache"
-        safe_clean ~/Library/Application\ Support/Filo/production/GPUCache/* "Filo GPU cache"
-        safe_clean ~/Library/Application\ Support/Filo/production/DawnGraphiteCache/* "Filo Dawn cache"
-        safe_clean ~/Library/Application\ Support/Filo/production/DawnWebGPUCache/* "Filo WebGPU cache"
+        mole_safe_clean_app_cache "Filo" ~/Library/Application\ Support/Filo/production/Cache/* "Filo cache"
+        mole_safe_clean_app_cache "Filo" ~/Library/Application\ Support/Filo/production/Code\ Cache/* "Filo code cache"
+        mole_safe_clean_app_cache "Filo" ~/Library/Application\ Support/Filo/production/GPUCache/* "Filo GPU cache"
+        mole_safe_clean_app_cache "Filo" ~/Library/Application\ Support/Filo/production/DawnGraphiteCache/* "Filo Dawn cache"
+        mole_safe_clean_app_cache "Filo" ~/Library/Application\ Support/Filo/production/DawnWebGPUCache/* "Filo WebGPU cache"
     fi
     # Claude (Electron)
     if [[ -d ~/Library/Application\ Support/Claude ]]; then
-        safe_clean ~/Library/Application\ Support/Claude/Cache/* "Claude cache"
-        safe_clean ~/Library/Application\ Support/Claude/Code\ Cache/* "Claude code cache"
-        safe_clean ~/Library/Application\ Support/Claude/GPUCache/* "Claude GPU cache"
-        safe_clean ~/Library/Application\ Support/Claude/DawnGraphiteCache/* "Claude Dawn cache"
-        safe_clean ~/Library/Application\ Support/Claude/DawnWebGPUCache/* "Claude WebGPU cache"
-        safe_clean ~/Library/Application\ Support/Claude/sentry/* "Claude sentry cache"
+        mole_safe_clean_app_cache "Claude" ~/Library/Application\ Support/Claude/Cache/* "Claude cache"
+        mole_safe_clean_app_cache "Claude" ~/Library/Application\ Support/Claude/Code\ Cache/* "Claude code cache"
+        mole_safe_clean_app_cache "Claude" ~/Library/Application\ Support/Claude/GPUCache/* "Claude GPU cache"
+        mole_safe_clean_app_cache "Claude" ~/Library/Application\ Support/Claude/DawnGraphiteCache/* "Claude Dawn cache"
+        mole_safe_clean_app_cache "Claude" ~/Library/Application\ Support/Claude/DawnWebGPUCache/* "Claude WebGPU cache"
+        mole_safe_clean_app_cache "Claude" ~/Library/Application\ Support/Claude/sentry/* "Claude sentry cache"
     fi
     # Qoder (VS Code fork, Electron)
     if [[ -d ~/Library/Application\ Support/Qoder ]]; then
-        safe_clean ~/Library/Application\ Support/Qoder/Cache/* "Qoder cache"
-        safe_clean ~/Library/Application\ Support/Qoder/CachedData/* "Qoder cached data"
-        safe_clean ~/Library/Application\ Support/Qoder/CachedExtensionVSIXs/* "Qoder extension cache"
-        safe_clean ~/Library/Application\ Support/Qoder/Code\ Cache/* "Qoder code cache"
-        safe_clean ~/Library/Application\ Support/Qoder/GPUCache/* "Qoder GPU cache"
-        safe_clean ~/Library/Application\ Support/Qoder/DawnGraphiteCache/* "Qoder Dawn cache"
-        safe_clean ~/Library/Application\ Support/Qoder/DawnWebGPUCache/* "Qoder WebGPU cache"
-        safe_clean ~/Library/Application\ Support/Qoder/logs/* "Qoder logs"
+        mole_safe_clean_app_cache "Qoder" ~/Library/Application\ Support/Qoder/Cache/* "Qoder cache"
+        mole_safe_clean_app_cache "Qoder" ~/Library/Application\ Support/Qoder/CachedData/* "Qoder cached data"
+        mole_safe_clean_app_cache "Qoder" ~/Library/Application\ Support/Qoder/CachedExtensionVSIXs/* "Qoder extension cache"
+        mole_safe_clean_app_cache "Qoder" ~/Library/Application\ Support/Qoder/Code\ Cache/* "Qoder code cache"
+        mole_safe_clean_app_cache "Qoder" ~/Library/Application\ Support/Qoder/GPUCache/* "Qoder GPU cache"
+        mole_safe_clean_app_cache "Qoder" ~/Library/Application\ Support/Qoder/DawnGraphiteCache/* "Qoder Dawn cache"
+        mole_safe_clean_app_cache "Qoder" ~/Library/Application\ Support/Qoder/DawnWebGPUCache/* "Qoder WebGPU cache"
+        mole_safe_clean_app_cache "Qoder" ~/Library/Application\ Support/Qoder/logs/* "Qoder logs"
     fi
     # Prisma ORM engine binaries cache
     safe_clean ~/.cache/prisma/* "Prisma cache"
@@ -5869,7 +5857,13 @@ clean_dev_misc() {
     # Codex CLI working-directory caches (~/.codex)
     clean_codex_cli
     # Cursor Agent session logs (versions cleaned separately in clean_dev_ai_agents)
-    [[ -d "$HOME/.local/share/cursor-agent" ]] && safe_find_delete "$HOME/.local/share/cursor-agent" "*.log" "$MOLE_LOG_AGE_DAYS" "f"
+    if [[ -d "$HOME/.local/share/cursor-agent" ]]; then
+        local cursor_logs_rc=0
+        safe_find_delete "$HOME/.local/share/cursor-agent" "*.log" "$MOLE_LOG_AGE_DAYS" "f" || cursor_logs_rc=$?
+        if mole_rc_signal "$cursor_logs_rc"; then
+            return "$cursor_logs_rc"
+        fi
+    fi
     # Playwright browser revisions are hard-protected by should_protect_path,
     # so no safe_clean call here can ever remove them. They cost a 100-500 MB
     # CDN re-download and a stale registry link does not prove the user is done

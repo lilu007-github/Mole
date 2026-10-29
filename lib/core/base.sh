@@ -69,24 +69,31 @@ unset mole_color
 #   mole_pgrep_any -x Xcode -f com.apple.dt.XCTest
 # Returns 0 when any pattern matches, 1 only when every probe reports no match,
 # and 2 when no pattern matches but at least one probe could not be completed.
+# pgrep reads each pattern as an extended regex, so the patterns of one
+# selector join with | into a single probe; -x still anchors the whole name.
+# A pgrep per pattern cost about 16ms each in per-item delete guards.
 mole_pgrep_any() {
     if [[ $# -eq 0 || $(($# % 2)) -ne 0 ]] || ! command -v pgrep > /dev/null 2>&1; then
         return 2
     fi
 
-    local aggregate_rc=1
-    local selector pattern probe_rc
+    local exact="" full="" selector pattern probe_rc aggregate_rc=1
     while [[ $# -gt 0 ]]; do
-        selector="$1"
-        pattern="$2"
+        case "$1" in
+            -x) exact="${exact:+$exact|}$2" ;;
+            -f) full="${full:+$full|}$2" ;;
+            *) return 2 ;;
+        esac
         shift 2
+    done
 
+    for selector in -x -f; do
+        pattern="$exact"
+        [[ "$selector" == "-x" ]] || pattern="$full"
+        [[ -n "$pattern" ]] || continue
         probe_rc=0
-        if pgrep "$selector" "$pattern" > /dev/null 2>&1; then
-            return 0
-        else
-            probe_rc=$?
-        fi
+        pgrep "$selector" "$pattern" > /dev/null 2>&1 || probe_rc=$?
+        [[ $probe_rc -ne 0 ]] || return 0
         [[ $probe_rc -eq 1 ]] || aggregate_rc=2
     done
 
@@ -147,7 +154,6 @@ get_lsregister_path() {
 # ============================================================================
 readonly MOLE_TEMP_FILE_AGE_DAYS=7       # Temp file retention (days)
 readonly MOLE_ORPHAN_AGE_DAYS=30         # Orphaned data retention (days)
-readonly MOLE_DOTDIR_ORPHAN_AGE_DAYS=60  # Orphan dotfile hint threshold (days)
 readonly MOLE_MAX_PARALLEL_JOBS=15       # Parallel job limit
 readonly MOLE_MAIL_DOWNLOADS_MIN_KB=5120 # Mail attachment size threshold
 readonly MOLE_MAIL_AGE_DAYS=30           # Mail attachment retention (days)
@@ -158,7 +164,6 @@ readonly MOLE_GPU_CACHE_AGE_DAYS=1       # Rebuildable GPU cache retention (days
 readonly MOLE_TM_BACKUP_SAFE_HOURS=48    # TM backup safety window (hours)
 readonly MOLE_MAX_DS_STORE_FILES=500     # Max .DS_Store files to clean per scan
 readonly MOLE_MAX_ORPHAN_ITERATIONS=100  # Max iterations for orphaned app data scan
-readonly MOLE_ONE_GIB_KB=$((1024 * 1024))
 readonly MOLE_ONE_GB_BYTES=1000000000
 
 # ============================================================================
@@ -207,6 +212,10 @@ declare -a SAFETY_WHITELIST_PATTERNS=(
     "$HOME/Library/Caches/com.apple.spotlight*"
     "$HOME/Library/Caches/com.apple.Spotlight*"
     "$HOME/Library/Caches/CloudKit*"
+    # Kitty keeps a live graphics-protocol cache here; removing it from a
+    # running session makes subsequent image transfers fail until the
+    # directory is recreated.
+    "$HOME/Library/Caches/kitty"
     "$HOME/Library/Caches/pypoetry/virtualenvs*"
     "$HOME/Library/Caches/org.R-project.R/R/renv/*"
 )
@@ -466,7 +475,7 @@ load_mole_whitelist() {
     [[ $whitelist_state -ne 2 ]] || return 1
     if [[ $whitelist_state -eq 0 ]]; then
         local line duplicate existing
-        while IFS= read -r line; do
+        while IFS= read -r line || [[ -n "$line" ]]; do
             # shellcheck disable=SC2295
             line="${line#"${line%%[![:space:]]*}"}"
             # shellcheck disable=SC2295
@@ -549,6 +558,16 @@ STAT_BSD="/usr/bin/stat"
 # File Provider mounts use this path too; GNU findutils earlier in PATH quotes
 # paths in its errors and fails on mounts BSD find walks past.
 FIND_BSD="/usr/bin/find"
+# sysctl lives in /usr/sbin, which a shell PATH may leave out; the PATH lookup
+# then fails and callers silently use their fallback values (#1804).
+SYSCTL_CMD="/usr/sbin/sysctl"
+# diskutil, lsof, pkgutil, ioreg and the other system tools Mole runs by name
+# live there too. Without them a probe reads as "nothing found": diskutil's
+# empty answer skipped the internal-volume refusal of --external. Appending
+# keeps the user's own order ahead of them.
+case ":${PATH:-}:" in *:/usr/sbin:*) ;; *) PATH="${PATH:+$PATH:}/usr/sbin" ;; esac
+case ":$PATH:" in *:/sbin:*) ;; *) PATH="$PATH:/sbin" ;; esac
+export PATH
 
 # Only complete generated completion lines are owned by Mole. A quoted mention
 # or a mixed command may carry unrelated user settings and must remain intact.
@@ -828,7 +847,7 @@ mole_wait_for_any_worker() {
 get_optimal_parallel_jobs() {
     local operation_type="${1:-default}"
     if [[ -z "${MOLE_CPU_CORES_CACHE:-}" ]]; then
-        export MOLE_CPU_CORES_CACHE=$(sysctl -n hw.ncpu 2> /dev/null || echo 4)
+        export MOLE_CPU_CORES_CACHE=$("$SYSCTL_CMD" -n hw.ncpu 2> /dev/null || echo 4)
     fi
     local cpu_cores="$MOLE_CPU_CORES_CACHE"
     case "$operation_type" in
@@ -1262,6 +1281,87 @@ prune_stale_mole_temp_files() {
         -mmin "+$max_age_minutes" -print0 2> /dev/null)
 }
 
+_mole_darwin_user_temp_dir() {
+    /usr/bin/getconf DARWIN_USER_TEMP_DIR 2> /dev/null
+}
+
+# A run killed before its exit trap leaves its registry and tracked temp
+# entries in TMPDIR, and macOS does not expire the per-user Darwin temp root
+# (2026-10-27: 25,412 Mole entries there, the oldest from July). Take only the
+# two names Mole creates, after the same one-day grace: `mole.registry.<pid>`
+# whose pid is gone, and `mole.` plus six letters or digits that is a regular
+# file with one link or an empty folder. Only the Darwin temp root qualifies,
+# never /tmp or a TMPDIR pointed at a user folder. Mole Mac's
+# TemporaryRootLeftoverPolicy applies the same contract.
+prune_stale_mole_tmpdir_leftovers() {
+    local root="${1:-}"
+    local max_age_minutes="${MOLE_TEMP_STALE_MINUTES:-1440}"
+    local darwin_temp="" resolved_root=""
+
+    [[ "$max_age_minutes" =~ ^[0-9]+$ ]] || max_age_minutes=1440
+    is_root_user && return 0
+    [[ -n "$root" && -d "$root" && ! -L "$root" && -O "$root" ]] || return 0
+
+    darwin_temp=$(_mole_darwin_user_temp_dir) || return 0
+    [[ -n "$darwin_temp" ]] || return 0
+    darwin_temp=$(cd -P "$darwin_temp" 2> /dev/null && pwd) || return 0
+    resolved_root=$(cd -P "$root" 2> /dev/null && pwd) || return 0
+    [[ "$resolved_root" == "$darwin_temp" ]] || return 0
+
+    # One process listing and set differences instead of a probe per entry:
+    # the first run on a long-lived temp root can meet tens of thousands of
+    # entries. No listing means every owner is unknown, so nothing goes.
+    local live_pids uid
+    live_pids=$(ps -axo pid= 2> /dev/null | tr -d ' ') || return 0
+    [[ "$live_pids" =~ [0-9] ]] || return 0
+    uid=$(id -u 2> /dev/null) || return 0
+    [[ "$uid" =~ ^[0-9]+$ ]] || return 0
+
+    # Names stay relative to the root so no path is rebuilt from text. Each
+    # list holds one name per line: the token and digit-only globs leave no
+    # room for a crafted name to add a line. "/" is a pattern no name can
+    # equal, so an empty keep list still filters correctly.
+    (
+        cd "$resolved_root" 2> /dev/null || exit 0
+        local token_glob='mole.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]'
+        local registries live_registries keep
+
+        registries=$(find . -mindepth 1 -maxdepth 1 -name 'mole.registry.[1-9]*' \
+            ! -name 'mole.registry.*[!0-9]*' -user "$uid" -type f -print 2> /dev/null |
+            sed 's#^\./mole\.registry\.##') || exit 0
+        live_registries=$(printf '%s\n' "$registries" |
+            grep -xF -f <(printf '%s\n' "$live_pids") 2> /dev/null) || live_registries=""
+
+        # A Mole run that has been open for more than a day still owns the
+        # entries its registry lists, however old they are.
+        keep="/"
+        if [[ -n "$live_registries" ]]; then
+            keep+=$'\n'$(printf '%s\n' "$live_registries" | sed 's#^#mole.registry.#' |
+                tr '\n' '\0' | xargs -0 cat -- 2> /dev/null | sed 's#^.*/##' |
+                grep -xE 'mole\.[A-Za-z0-9]{6}' 2> /dev/null) || true
+        fi
+
+        find . -mindepth 1 -maxdepth 1 -name "$token_glob" -user "$uid" \
+            -mmin "+$max_age_minutes" -type f -links 1 -print 2> /dev/null |
+            sed 's#^\./##' | grep -vxF -f <(printf '%s\n' "$keep") 2> /dev/null |
+            tr '\n' '\0' | xargs -0 rm -f -- 2> /dev/null # SAFE: unowned Mole temp names in the Darwin temp root only
+        # rmdir refuses a folder that gained content since the scan.
+        find . -mindepth 1 -maxdepth 1 -name "$token_glob" -user "$uid" \
+            -mmin "+$max_age_minutes" -type d -empty -print 2> /dev/null |
+            sed 's#^\./##' | grep -vxF -f <(printf '%s\n' "$keep") 2> /dev/null |
+            tr '\n' '\0' | xargs -0 rmdir -- 2> /dev/null
+
+        find . -mindepth 1 -maxdepth 1 -name 'mole.registry.[1-9]*' \
+            ! -name 'mole.registry.*[!0-9]*' -user "$uid" \
+            -mmin "+$max_age_minutes" -type f -links 1 -print 2> /dev/null |
+            sed 's#^\./mole\.registry\.##' |
+            grep -vxF -f <(printf '%s\n' "$live_pids") 2> /dev/null |
+            sed 's#^#mole.registry.#' | tr '\n' '\0' |
+            xargs -0 rm -f -- 2> /dev/null # SAFE: dead-owner Mole registries in the Darwin temp root only
+        exit 0
+    ) || true
+}
+
 initialize_mole_temp_registry_path() {
     [[ -n "${MOLE_RESOLVED_TMPDIR:-}" ]] || return 1
 
@@ -1350,6 +1450,7 @@ ensure_mole_temp_root() {
     export MOLE_RESOLVED_TMPDIR
     initialize_mole_temp_registry_path || true
     prune_stale_mole_temp_files "$MOLE_RESOLVED_TMPDIR"
+    prune_stale_mole_tmpdir_leftovers "$MOLE_RESOLVED_TMPDIR"
 }
 
 prepare_mole_tmpdir() {
@@ -1720,6 +1821,108 @@ mole_clean_process_guard() {
     _MOLE_CLEAN_GUARD_REASON="$busy_reason"
     [[ $process_state -eq 2 ]] && _MOLE_CLEAN_GUARD_REASON="$unknown_reason"
     return 1
+}
+
+# Named Electron caches do not carry a reverse-DNS owner in their path.
+# Callers supply the exact app name, not an executable such as Electron that
+# unrelated apps share. Escape it before both process-name and bundle probes.
+_mole_named_app_cache_running() {
+    mole_pgrep_any -x "$_MOLE_NAMED_APP_CACHE_PATTERN" \
+        -f "/${_MOLE_NAMED_APP_CACHE_PATTERN}[.]app/"
+}
+
+_dev_process_delete_guard_allows() {
+    # Bind ordinary leaves before probing. Compound probes can supply their
+    # own narrower binding; the final callback never refreshes this evidence.
+    local _MOLE_DEV_GUARDED_PATH="${1:-}"
+    local leaf_parent="" leaf_parent_id="" leaf_target_id=""
+    if [[ -n "$_MOLE_DEV_GUARDED_PATH" &&
+        "${_MOLE_SAFE_CLEAN_BOUND_PATH:-}" != "$_MOLE_DEV_GUARDED_PATH" ]]; then
+        if ! _mole_snapshot_path_identity "$_MOLE_DEV_GUARDED_PATH"; then
+            _MOLE_CLEAN_GUARD_REASON="${_MOLE_DEV_PROCESS_GUARD_UNKNOWN_REASON:-process state unknown}"
+            return 1
+        fi
+        leaf_parent="$_MOLE_PATH_SNAPSHOT_PARENT"
+        leaf_parent_id="$_MOLE_PATH_SNAPSHOT_PARENT_ID"
+        leaf_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
+    fi
+    mole_clean_process_guard \
+        "$_MOLE_DEV_PROCESS_GUARD_PROBE" \
+        "$_MOLE_DEV_PROCESS_GUARD_FAMILY started" \
+        "${_MOLE_DEV_PROCESS_GUARD_UNKNOWN_REASON:-process state unknown}" || return $?
+
+    if [[ -n "$leaf_parent" &&
+        "${_MOLE_SAFE_CLEAN_BOUND_PATH:-}" != "$_MOLE_DEV_GUARDED_PATH" ]]; then
+        _MOLE_SAFE_CLEAN_BOUND_PATH="$_MOLE_DEV_GUARDED_PATH"
+        _MOLE_SAFE_CLEAN_EXPECTED_PARENT="$leaf_parent"
+        _MOLE_SAFE_CLEAN_EXPECTED_PARENT_ID="$leaf_parent_id"
+        _MOLE_SAFE_CLEAN_EXPECTED_TARGET_ID="$leaf_target_id"
+    fi
+    return 0
+}
+
+_dev_report_process_guard_stop() {
+    local display_name="$1"
+    local family="$2"
+    local reason="$3"
+
+    if [[ "$reason" == "process state unknown" || "$reason" == "process or cache path state unknown" ]]; then
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} ${display_name} · stopped (${reason})"
+        note_activity
+    else
+        mole_defer_cleanup_family "$family"
+    fi
+}
+
+# Preserve a caller's final exclusion before repeating the owner probe. The
+# outer callback may itself do slow work, so owner evidence must come last.
+_dev_final_process_delete_guard_allows() {
+    if [[ -n "$_MOLE_DEV_OUTER_FINAL_GUARD" ]]; then
+        "$_MOLE_DEV_OUTER_FINAL_GUARD" "$@" || return $?
+    fi
+    _dev_process_delete_guard_allows "$@"
+}
+
+# Bind a tri-state process probe after sizing and at safe_remove's final sink.
+# Guard state is intentionally dynamic so Bash 3.2 callbacks can read it.
+_dev_safe_clean_process_guarded() {
+    local probe="$1"
+    local family="$2"
+    local display_name="$3"
+    shift 3
+    local _MOLE_DEV_PROCESS_GUARD_PROBE="$probe"
+    local _MOLE_DEV_PROCESS_GUARD_FAMILY="$family"
+    local _MOLE_CLEAN_GUARD_REASON="${family} started"
+    local _MOLE_DEV_OUTER_FINAL_GUARD="${_MOLE_SAFE_REMOVE_FINAL_GUARD:-}"
+    local _MOLE_SAFE_REMOVE_FINAL_GUARD=_dev_final_process_delete_guard_allows
+
+    if ! declare -f safe_clean_guarded > /dev/null 2>&1; then
+        if ! _dev_process_delete_guard_allows; then
+            _dev_report_process_guard_stop "$display_name" "$family" "$_MOLE_CLEAN_GUARD_REASON"
+            return 1
+        fi
+        safe_clean "$@"
+        return $?
+    fi
+
+    local guarded_rc=0
+    safe_clean_guarded _dev_process_delete_guard_allows "$@" || guarded_rc=$?
+    if [[ $guarded_rc -eq 75 ]]; then
+        _dev_report_process_guard_stop "$display_name" "$family" "$_MOLE_CLEAN_GUARD_REASON"
+        return 1
+    fi
+    return "$guarded_rc"
+}
+
+mole_safe_clean_app_cache() {
+    local owner="$1"
+    shift
+    local _MOLE_NAMED_APP_CACHE_PATTERN
+    _MOLE_NAMED_APP_CACHE_PATTERN=$(_mole_regex_escape "$owner")
+    local rc=0
+    _dev_safe_clean_process_guarded _mole_named_app_cache_running "$owner" "${*: -1}" "$@" || rc=$?
+    [[ $rc -gt 1 ]] || return 0
+    return "$rc"
 }
 
 # Report a guard refusal. An unknown process state is the user's problem to see

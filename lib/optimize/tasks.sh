@@ -14,8 +14,6 @@ source "$_MOLE_OPTIMIZE_TASKS_DIR/catalog.sh"
 source "$_MOLE_OPTIMIZE_TASKS_DIR/outcomes.sh"
 
 # Config constants (override via env).
-readonly MOLE_TM_THIN_TIMEOUT=180
-readonly MOLE_TM_THIN_VALUE=9999999999
 readonly MOLE_SQLITE_MAX_SIZE=104857600 # 100MB
 
 # Dry-run aware output.
@@ -157,8 +155,9 @@ has_active_vpn_interface() {
 }
 
 # Return 0 when the DNS cache was flushed (or would be in dry-run), 1 when the
-# flush failed or admin access is missing, 2 when an active VPN skipped it, and
-# 3 when the VPN state is unknown. SIGHUP makes mDNSResponder drop its cache,
+# flush failed or admin access is missing, 2 when an active VPN skipped it, 3
+# when the VPN state is unknown, and 4 when the directory cache was flushed but
+# macOS refused the mDNSResponder signal. SIGHUP makes mDNSResponder drop its cache,
 # and VPN clients that watch DNS configuration (WireGuard and similar) treat
 # that as a network change and reconnect. An unknown state also skips, like
 # opt_network_stack_optimize, because the probe could not rule a VPN out.
@@ -179,9 +178,24 @@ flush_dns_cache() {
         return 1
     fi
 
-    if sudo dscacheutil -flushcache 2> /dev/null && sudo killall -HUP mDNSResponder 2> /dev/null; then
-        return 0
-    fi
+    # Newer macOS keeps the same system plist but names the service .reloaded.
+    # Read only that SIP-protected plist; never discover a target by process name or PID.
+    local service_label=""
+    service_label=$(/usr/bin/plutil -extract Label raw -o - \
+        /System/Library/LaunchDaemons/com.apple.mDNSResponder.plist 2> /dev/null) || return 1
+    case "$service_label" in
+        com.apple.mDNSResponder | com.apple.mDNSResponder.reloaded) ;;
+        *) return 1 ;;
+    esac
+
+    sudo dscacheutil -flushcache 2> /dev/null || return 1
+    local signal_error="" signal_status=0
+    { signal_error=$(sudo /bin/launchctl kill SIGHUP "system/$service_label" 2>&1 >&3); } 3>&1 || signal_status=$?
+    [[ $signal_status -eq 0 ]] && return 0
+    # macOS 27 refuses this signal to every caller, root included (#1867).
+    # That is the OS withholding the action, not a failed refresh, and the
+    # name-based killall it would take to get past it is still refused above.
+    [[ "$signal_error" == *"Not privileged to signal service"* ]] && return 4
     return 1
 }
 
@@ -429,6 +443,10 @@ opt_network_optimization() {
         3)
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to inspect active VPN state"
             optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
+            ;;
+        4)
+            opt_msg "DNS cache refresh skipped, macOS does not allow signaling mDNSResponder"
+            optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_SKIPPED"
             ;;
         *)
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to refresh DNS cache"
@@ -1446,7 +1464,9 @@ opt_notification_cleanup() {
                 "DELETE FROM record WHERE delivered_date < strftime('%s','now','-30 days'); VACUUM;" \
                 2> /dev/null || sql_ok=$?
             if [[ $sql_ok -eq 0 ]]; then
-                killall NotificationCenter 2> /dev/null || true
+                # Let launchd signal its own service instance, never every process with this name.
+                run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" /bin/launchctl kill SIGTERM \
+                    "gui/$UID/com.apple.notificationcenterui.agent" > /dev/null 2>&1 || true
                 opt_msg "Notification Center database cleaned (was $(bytes_to_human $((db_size * 1024))))"
                 optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_APPLIED"
             else

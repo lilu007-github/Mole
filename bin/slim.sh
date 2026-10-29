@@ -35,6 +35,8 @@ trap 'trap - EXIT; cleanup; exit 130' INT TERM
 readonly SLIM_EXIT_UNSUPPORTED=4
 # Signature and Gatekeeper checks read every file of a large app.
 readonly SLIM_VERIFY_TIMEOUT_SEC=180
+# Assessing an original during the scan; a slower answer counts as unknown.
+readonly SLIM_SCAN_GATEKEEPER_TIMEOUT_SEC=20
 SLIM_WORK_DIR=""
 
 # Scan results, one index per app.
@@ -48,7 +50,9 @@ SLIM_APP_PLANS=()
 total_slimmed=0
 total_freed_bytes=0
 total_failed=0
-SLIM_FAILURES=()
+SLIM_DONE_NAMES=()
+SLIM_FAILED_NAMES=()
+SLIM_FAILED_REASONS=()
 
 show_slim_help() {
     echo "Usage: mo slim [OPTIONS]"
@@ -57,6 +61,7 @@ show_slim_help() {
     echo "Each app is slimmed on a copy that must pass code signing and Gatekeeper"
     echo "checks before it replaces the original, which moves to the Trash."
     echo "App updates bring the Intel code back."
+    echo "Apps protected by ~/.config/mole/whitelist are skipped."
     echo ""
     echo "Options:"
     echo "  --dry-run, -n     List apps and reclaimable space without changes"
@@ -83,7 +88,8 @@ slim_host_is_apple_silicon() {
         return
     fi
     # uname -m reports x86_64 inside a Rosetta shell; the sysctl does not.
-    [[ "$(sysctl -n hw.optional.arm64 2> /dev/null || echo 0)" == "1" ]]
+    # Absolute path: a PATH without /usr/sbin made every Mac read as Intel (#1804).
+    [[ "$(/usr/sbin/sysctl -n hw.optional.arm64 2> /dev/null || echo 0)" == "1" ]]
 }
 
 slim_plist_value() {
@@ -130,6 +136,10 @@ slim_app_prefers_rosetta() {
 # Running apps are listed and refused only when slimming starts.
 slim_skip_reason() {
     local app="$1" check_running="${2:-true}"
+    if is_path_whitelisted "$app"; then
+        echo "whitelisted"
+        return
+    fi
     [[ -L "$app" ]] && {
         echo "symlink"
         return
@@ -176,16 +186,17 @@ slim_skip_reason() {
         return
     }
     if [[ "$check_running" == true ]] && slim_app_is_running "$app"; then
-        echo "running, quit it and retry"
+        echo "still running"
         return
     fi
     return 0
 }
 
-# Print the files2 keys that CodeResources seals by cdhash (nested code with
-# its own signature). Keys sealed by hash2 are plain files: thinning one
-# breaks the bundle seal. Parses the XML form; plutil -p is not parseable.
-slim_cdhash_sealed_keys() {
+# Print "<c|h>\t<key>" for every files2 key in CodeResources: c when it is
+# sealed by cdhash (nested code with its own signature), h otherwise. A key
+# sealed by hash2 is a plain file: thinning one breaks the bundle seal.
+# Parses the XML form; plutil -p is not parseable.
+slim_sealed_keys() {
     local code_resources="$1"
     plutil -convert xml1 -o - "$code_resources" 2> /dev/null | awk '
         function decode(s) {
@@ -202,10 +213,10 @@ slim_cdhash_sealed_keys() {
             next
         }
         !in_files2 { next }
-        line == "<dict/>" { next }
+        line == "<dict/>" { if (depth == 1) print "h\t" decode(key); next }
         line == "<dict>" { depth++; if (depth == 2) { sealed = 0 }; next }
         line == "</dict>" {
-            if (depth == 2 && sealed) print decode(key)
+            if (depth == 2) print (sealed ? "c" : "h") "\t" decode(key)
             depth--
             if (depth == 0) exit
             next
@@ -328,6 +339,22 @@ slim_is_thin_arm() {
     [[ "$(od -An -v -tu1 -N 8 "$1" 2> /dev/null | tr -s ' \n' ' ')" == " 207 250 237 254 12 0 0 1 " ]]
 }
 
+# Set keys_file to the cached slim_sealed_keys output for a sealing root;
+# roots and root_keys belong to the calling slim_plan_app.
+slim_seal_keys_file() {
+    local root="$1" i
+    for ((i = 0; i < ${#roots[@]}; i++)); do
+        if [[ "${roots[i]}" == "$root" ]]; then
+            keys_file="${root_keys[i]}"
+            return 0
+        fi
+    done
+    keys_file=$(create_temp_file) || return 1
+    slim_sealed_keys "$root/_CodeSignature/CodeResources" > "$keys_file" || true
+    roots+=("$root")
+    root_keys+=("$keys_file")
+}
+
 # Write "<path relative to the app>\t<intel bytes>" for every file that can
 # be thinned without breaking a seal; print the total.
 slim_plan_app() {
@@ -339,23 +366,21 @@ slim_plan_app() {
     while IFS= read -r file; do
         local root
         root=$(slim_sealing_root "$file" "$app") || continue
-        local allowed=false
+        local allowed=false keys_file
         if slim_is_main_executable "$file" "$root"; then
             allowed=true
         else
-            local keys_file="" i
-            for ((i = 0; i < ${#roots[@]}; i++)); do
-                [[ "${roots[i]}" == "$root" ]] && keys_file="${root_keys[i]}"
-            done
-            if [[ -z "$keys_file" ]]; then
-                keys_file=$(create_temp_file) || return 1
-                slim_cdhash_sealed_keys "$root/_CodeSignature/CodeResources" > "$keys_file" || true
-                roots+=("$root")
-                root_keys+=("$keys_file")
-            fi
-            local rel="${file#"$root"/}"
-            grep -Fxq -- "$rel" "$keys_file" && allowed=true
+            slim_seal_keys_file "$root" || return 1
+            grep -Fxq -- "c"$'\t'"${file#"$root"/}" "$keys_file" && allowed=true
         fi
+        # An enclosing bundle may seal the same file by plain hash: ScreenFlow
+        # signs its QuickLook plugin but its own seal lists the plugin's
+        # executable as a file, so thinning that executable broke the app.
+        local outer="$root"
+        while [[ "$allowed" == true ]] && outer=$(slim_sealing_root "$outer" "$app"); do
+            slim_seal_keys_file "$outer" || return 1
+            grep -Fxq -- "h"$'\t'"${file#"$outer"/}" "$keys_file" && allowed=false
+        done
         [[ "$allowed" == true ]] || {
             debug_log "slim: keeping $file (sealed as a plain file)"
             continue
@@ -381,12 +406,19 @@ collect_slim_candidates() {
     SLIM_APP_PLANS=()
 
     local -a apps=()
-    local root app
+    local root dir app
     while IFS= read -r root; do
         [[ -d "$root" ]] || continue
-        for app in "$root"/*.app; do
-            [[ -e "$app" || -L "$app" ]] || continue
-            apps+=("$app")
+        # One level of plain folders such as Utilities (#1811); never a bundle
+        # or a symlinked folder, and every app still passes the same checks.
+        for dir in "$root" "$root"/*; do
+            if [[ "$dir" != "$root" ]]; then
+                [[ "$dir" != *.app && -d "$dir" && ! -L "$dir" ]] || continue
+            fi
+            for app in "$dir"/*.app; do
+                [[ -e "$app" || -L "$app" ]] || continue
+                apps+=("$app")
+            done
         done
     done < <(slim_app_roots)
 
@@ -417,6 +449,29 @@ collect_slim_candidates() {
 
     [[ ${#unsorted[@]} -gt 0 ]] || return 1
 
+    # An original Gatekeeper already rejects (an unnotarized build) can never
+    # yield a copy that passes, so it is left out rather than offered and
+    # failed after a full copy. All candidates are assessed at once, about a
+    # second in total; only an explicit rejection (3) removes one.
+    local -a pids=() accepted=()
+    local entry i gk
+    for entry in "${unsorted[@]}"; do
+        app="${entry#*$'\t'}"
+        run_with_timeout "$SLIM_SCAN_GATEKEEPER_TIMEOUT_SEC" spctl --assess --type execute "${app%%$'\t'*}" > /dev/null 2>&1 < /dev/null &
+        pids+=("$!")
+    done
+    for ((i = 0; i < ${#unsorted[@]}; i++)); do
+        gk=0
+        wait "${pids[i]}" || gk=$?
+        if [[ $gk -eq 3 ]]; then
+            app="${unsorted[i]#*$'\t'}"
+            debug_log "slim: skipping ${app%%$'\t'*} (Gatekeeper rejects the original)"
+            continue
+        fi
+        accepted+=("${unsorted[i]}")
+    done
+    [[ ${#accepted[@]} -gt 0 ]] || return 1
+
     while IFS=$'\t' read -r bytes app identity team plan_file; do
         SLIM_APP_BYTES+=("$bytes")
         SLIM_APP_PATHS+=("$app")
@@ -425,21 +480,39 @@ collect_slim_candidates() {
         SLIM_APP_PLANS+=("$plan_file")
         local name="${app##*/}"
         SLIM_APP_NAMES+=("${name%.app}")
-    done < <(printf '%s\n' "${unsorted[@]}" | sort -t$'\t' -k1,1nr)
+    done < <(printf '%s\n' "${accepted[@]}" | sort -t$'\t' -k1,1nr)
     return 0
+}
+
+slim_name_column_width() {
+    local columns="${COLUMNS:-$(tput cols 2> /dev/null || echo 80)}"
+    [[ "$columns" =~ ^[0-9]+$ && "$columns" -gt 0 ]] || columns=80
+    local name width max_width=18 available=$((columns - 14))
+    for name in "${SLIM_APP_NAMES[@]}"; do
+        width=$(get_display_width "$(mole_terminal_safe_text "$name")")
+        [[ $width -le $max_width ]] || max_width=$width
+    done
+    # Match the app selector's bounded name column, with no date column.
+    # Reserve four cells for the menu prefix, one gap and nine for size.
+    [[ $max_width -le 60 ]] || max_width=60
+    [[ $max_width -le $available ]] || max_width=$available
+    [[ $max_width -ge 1 ]] || max_width=1
+    printf '%s\n' "$max_width"
 }
 
 slim_display_row() {
     local name width
-    name=$(truncate_by_display_width "$(mole_terminal_safe_text "$1")" 36)
+    local name_width="$3"
+    name=$(truncate_by_display_width "$(mole_terminal_safe_text "$1")" "$name_width")
     width=$(get_display_width "$name")
-    printf '%s%*s %10s' "$name" "$((36 - width))" "" "$(bytes_to_human "$2")"
+    printf '%s%*s %9s' "$name" "$((name_width - width))" "" "$(bytes_to_human "$2")"
 }
 
 print_slim_list() {
-    local i total=0
+    local i total=0 name_width
+    name_width=$(slim_name_column_width)
     for ((i = 0; i < ${#SLIM_APP_PATHS[@]}; i++)); do
-        printf '  %s\n' "$(slim_display_row "${SLIM_APP_NAMES[i]}" "${SLIM_APP_BYTES[i]}")"
+        printf '  %s\n' "$(slim_display_row "${SLIM_APP_NAMES[i]}" "${SLIM_APP_BYTES[i]}" "$name_width")"
         total=$((total + SLIM_APP_BYTES[i]))
     done
     printf '\n%s apps, %s of Intel code\n' "${#SLIM_APP_PATHS[@]}" "$(bytes_to_human "$total")"
@@ -447,7 +520,9 @@ print_slim_list() {
 
 record_slim_failure() {
     local app="$1" reason="$2"
-    SLIM_FAILURES+=("${app##*/} ($reason)")
+    local name="${app##*/}"
+    SLIM_FAILED_NAMES+=("${name%.app}")
+    SLIM_FAILED_REASONS+=("$reason")
     total_failed=$((total_failed + 1))
     log_operation "$MOLE_CURRENT_COMMAND" "SKIPPED" "$app" "$reason"
 }
@@ -457,17 +532,26 @@ slim_thin_file() {
     info=$(slim_arm_slice "$file") || return 1
     read -r off size _intel <<< "$info"
 
-    local out="$file.mole-slim" mode
+    local out mode
     mode=$("$STAT_BSD" -f %Lp "$file") || return 1
+    # Bundle contents can already include any fixed suffix, including a link.
+    # Create the output exclusively rather than opening a bundle-owned path.
+    out=$(mktemp "$file.mole-slim.XXXXXX") || return 1
     # head stops reading once it has the slice, so when the slice is not the
     # last one tail dies of SIGPIPE; the size and Mach-O checks below are what
     # decide whether the copy is whole.
-    { tail -c +"$((off + 1))" "$file" 2> /dev/null || true; } | head -c "$size" > "$out" 2> /dev/null || return 1
+    if ! { tail -c +"$((off + 1))" "$file" 2> /dev/null || true; } | head -c "$size" > "$out" 2> /dev/null; then
+        rm -f "$out" # SAFE: exclusively created slice output inside the staging copy
+        return 1
+    fi
     if [[ "$("$STAT_BSD" -f %z "$out" 2> /dev/null)" != "$size" ]] || ! slim_is_thin_arm "$out"; then
         rm -f "$out" # SAFE: partial slice written by this function inside the staging copy
         return 1
     fi
-    chmod "$mode" "$out" && mv -f "$out" "$file"
+    if ! chmod "$mode" "$out" || ! mv -f "$out" "$file"; then
+        rm -f "$out" # SAFE: exclusively created slice output that was not installed
+        return 1
+    fi
 }
 
 # Every check runs on the slimmed copy; any failure keeps the original.
@@ -514,6 +598,10 @@ slim_one_app() {
     local bytes="${SLIM_APP_BYTES[index]}"
 
     local reason identity
+    if ! load_mole_whitelist "$HOME"; then
+        record_slim_failure "$app" "whitelist unavailable"
+        return 0
+    fi
     reason=$(slim_skip_reason "$app")
     if [[ -n "$reason" ]]; then
         record_slim_failure "$app" "$reason"
@@ -574,10 +662,23 @@ slim_one_app() {
         return 0
     fi
 
+    # Protection may change during the copy or signature checks. A failed
+    # reload is unknown, never permission to replace the original.
+    if ! load_mole_whitelist "$HOME"; then
+        slim_discard_stage "$stage"
+        record_slim_failure "$app" "whitelist unavailable"
+        return 0
+    fi
+    if is_path_whitelisted "$app"; then
+        slim_discard_stage "$stage"
+        record_slim_failure "$app" "whitelisted"
+        return 0
+    fi
+
     # The app may have started while the copy was checked.
     if slim_app_is_running "$app"; then
         slim_discard_stage "$stage"
-        record_slim_failure "$app" "running, quit it and retry"
+        record_slim_failure "$app" "still running"
         return 0
     fi
 
@@ -607,84 +708,126 @@ slim_one_app() {
 
     slim_discard_stage "$stage"
     total_slimmed=$((total_slimmed + 1))
+    SLIM_DONE_NAMES+=("${SLIM_APP_NAMES[index]}")
     total_freed_bytes=$((total_freed_bytes + bytes))
     log_operation "$MOLE_CURRENT_COMMAND" "REBUILT" "$app" "removed Intel code, $(bytes_to_human "$bytes")"
     return 0
 }
 
 select_slim_apps() {
-    local -a rows=() sizes_kb=()
-    local i
+    local -a rows=() sizes_kb=() names=()
+    local i name_width
+    name_width=$(slim_name_column_width)
     for ((i = 0; i < ${#SLIM_APP_PATHS[@]}; i++)); do
-        rows+=("$(slim_display_row "${SLIM_APP_NAMES[i]}" "${SLIM_APP_BYTES[i]}")")
+        rows+=("$(slim_display_row "${SLIM_APP_NAMES[i]}" "${SLIM_APP_BYTES[i]}" "$name_width")")
         sizes_kb+=("$((SLIM_APP_BYTES[i] / 1024))")
+        names+=("$(mole_terminal_safe_text "${SLIM_APP_NAMES[i]}")")
     done
     MOLE_MENU_META_SIZEKB=$(
         IFS=','
         printf '%s' "${sizes_kb[*]}"
     )
     export MOLE_MENU_META_SIZEKB
+    MOLE_MENU_FILTER_NAMES=$(printf '%s\n' "${names[@]}")
+    export MOLE_MENU_FILTER_NAMES
     export MOLE_MENU_SORT_MODE=size
     export MOLE_MENU_SORT_REVERSE=false
 
     MOLE_SELECTION_RESULT=""
     local rc=0
     paginated_multi_select "Select apps to slim" "${rows[@]}" || rc=$?
-    unset MOLE_MENU_META_SIZEKB
+    unset MOLE_MENU_META_SIZEKB MOLE_MENU_FILTER_NAMES
     [[ $rc -eq 0 && -n "$MOLE_SELECTION_RESULT" ]]
 }
 
 confirm_slim_selection() {
     local -a indices=("$@")
-    local idx total=0
-    echo -e "${PURPLE_BOLD}Apps to slim:${NC}"
+    local idx total=0 running=false tag
+    echo -e "\n${PURPLE_BOLD}Apps to slim:${NC}"
     for idx in "${indices[@]}"; do
-        printf '  %s%s%s %s %s, %s%s\n' "$GREEN" "$ICON_SUCCESS" "$NC" \
-            "$(mole_terminal_safe_text "${SLIM_APP_NAMES[idx]}")" "$GRAY" "$(bytes_to_human "${SLIM_APP_BYTES[idx]}")" "$NC"
+        tag=""
+        if slim_app_is_running "${SLIM_APP_PATHS[idx]}"; then
+            tag=" ${YELLOW}[Running]${NC}"
+            running=true
+        fi
+        printf '%b%s%b\n' "${BLUE}${ICON_CONFIRM}${NC} " "$(mole_terminal_safe_text "${SLIM_APP_NAMES[idx]}")" \
+            " ${GRAY}, $(bytes_to_human "${SLIM_APP_BYTES[idx]}")${NC}${tag}"
         total=$((total + SLIM_APP_BYTES[idx]))
     done
     echo ""
     echo -e "${GRAY}Originals move to the Trash. App updates bring the Intel code back.${NC}"
-    echo -ne "${PURPLE}${ICON_ARROW}${NC} Slim ${#indices[@]} apps, $(bytes_to_human "$total")  ${GREEN}Enter${NC} confirm, ${GRAY}ESC${NC} cancel: "
+    [[ "$running" == false ]] || echo -e "${GRAY}Running apps are skipped, quit them before you confirm.${NC}"
+    local app_text="apps"
+    [[ ${#indices[@]} -gt 1 ]] || app_text="app"
+    echo -ne "${PURPLE}${ICON_ARROW}${NC} Slim ${#indices[@]} ${app_text}, $(bytes_to_human "$total")  ${GREEN}Enter${NC} confirm, ${GRAY}ESC${NC} cancel: "
 
     local confirm
-    IFS= read -r -s -n1 confirm || confirm=""
+    if ! IFS= read -r -s -n1 confirm; then
+        printf '\n'
+        return 1
+    fi
+    printf '\n'
     case "$confirm" in
-        "" | $'\n' | $'\r')
-            printf '\r\033[K\n'
-            return 0
-            ;;
+        "" | $'\n' | $'\r') return 0 ;;
     esac
     printf '\n'
     return 1
 }
 
+# Mirrors the uninstall summary: slimmed apps three per line, then the apps
+# left unchanged grouped by reason so six running apps read as one line.
 show_slim_summary() {
-    local heading="Apps slimmed"
     local -a details=()
-    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        heading="Dry run complete - no changes made"
-    elif [[ $total_failed -gt 0 ]]; then
-        heading="Slimming incomplete"
-    fi
+    local i name
 
     if [[ $total_slimmed -gt 0 ]]; then
-        if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-            details+=("Would slim ${GREEN}$total_slimmed${NC} apps, free ${GREEN}$(bytes_to_human "$total_freed_bytes")${NC}")
-        else
-            details+=("Slimmed ${GREEN}$total_slimmed${NC} apps, freed ${GREEN}$(bytes_to_human "$total_freed_bytes")${NC} once the Trash is emptied")
-        fi
-    else
-        details+=("No apps were slimmed")
+        local app_text="apps"
+        [[ $total_slimmed -gt 1 ]] || app_text="app"
+        local line="Slimmed ${total_slimmed} ${app_text}, freed ${GREEN}$(bytes_to_human "$total_freed_bytes")${NC}: "
+        for ((i = 0; i < ${#SLIM_DONE_NAMES[@]}; i++)); do
+            if ((i > 0 && i % 3 == 0)); then
+                details+=("$line")
+                line=""
+            elif ((i > 0)); then
+                line+=", "
+            fi
+            name=$(mole_terminal_safe_text "${SLIM_DONE_NAMES[i]}")
+            line+="${GREEN}${name//\\/\\\\}${NC}"
+        done
+        details+=("$line")
     fi
 
-    local failure
-    for failure in "${SLIM_FAILURES[@]+"${SLIM_FAILURES[@]}"}"; do
-        failure=$(mole_terminal_safe_text "$failure")
-        details+=("${ICON_WARNING} Kept ${failure//\\/\\\\}")
+    local -a reasons=()
+    local reason seen names label
+    for reason in "${SLIM_FAILED_REASONS[@]+"${SLIM_FAILED_REASONS[@]}"}"; do
+        for seen in "${reasons[@]+"${reasons[@]}"}"; do
+            [[ "$seen" != "$reason" ]] || continue 2
+        done
+        reasons+=("$reason")
+    done
+    for reason in "${reasons[@]+"${reasons[@]}"}"; do
+        names=""
+        for ((i = 0; i < ${#SLIM_FAILED_NAMES[@]}; i++)); do
+            [[ "${SLIM_FAILED_REASONS[i]}" == "$reason" ]] || continue
+            [[ -z "$names" ]] || names+=", "
+            names+="${SLIM_FAILED_NAMES[i]}"
+        done
+        names=$(mole_terminal_safe_text "$names")
+        label=$(mole_terminal_safe_text "$reason")
+        label="$(printf '%s' "${label:0:1}" | /usr/bin/tr '[:lower:]' '[:upper:]')${label:1}"
+        details+=("${ICON_LIST} ${label//\\/\\\\}: ${YELLOW}${names//\\/\\\\}${NC}")
+        if [[ "$reason" == "still running" ]]; then
+            local them="them"
+            [[ "$names" == *", "* ]] || them="it"
+            details+=("${GRAY}${ICON_SUBLIST} Quit ${them}, then run mo slim again${NC}")
+        fi
     done
 
-    print_summary_block "$heading" "${details[@]}"
+    [[ ${#details[@]} -gt 0 ]] || details+=("No apps were slimmed")
+
+    local title="Slim complete"
+    [[ $total_failed -eq 0 ]] || title="Slim incomplete"
+    print_summary_block "$title" "${details[@]}"
     printf '\n'
 }
 
@@ -693,6 +836,7 @@ slim_preflight() {
         printf 'mo slim needs an Apple Silicon Mac; on an Intel Mac the Intel code is the code that runs.\n' >&2
         return "$SLIM_EXIT_UNSUPPORTED"
     fi
+    load_mole_whitelist "$HOME" || return 1
     SLIM_WORK_DIR=$(create_temp_dir) || return 1
     return 0
 }
@@ -756,12 +900,26 @@ main() {
     confirm_slim_selection "${indices[@]}" || return 0
 
     log_operation_session_start "$MOLE_CURRENT_COMMAND"
-    local idx slim_rc=0
+    local idx slim_rc=0 current=0 before failed_before name prefix=""
     for idx in "${indices[@]}"; do
         [[ "$idx" =~ ^[0-9]+$ && $idx -lt ${#SLIM_APP_PATHS[@]} ]] || continue
-        [[ -t 1 ]] && start_inline_spinner "Slimming ${SLIM_APP_NAMES[idx]}..."
+        current=$((current + 1))
+        name=$(mole_terminal_safe_text "${SLIM_APP_NAMES[idx]}")
+        # Like uninstall, number each app only when several are selected.
+        [[ ${#indices[@]} -le 1 ]] || prefix="[$current/${#indices[@]}] "
+        before=$total_slimmed
+        failed_before=${#SLIM_FAILED_REASONS[@]}
+        [[ -t 1 ]] && start_inline_spinner "${prefix}Slimming ${name}..."
         slim_one_app "$idx" || slim_rc=$?
         [[ -t 1 ]] && stop_inline_spinner
+        if [[ -t 1 && -n "$prefix" ]]; then
+            if [[ $total_slimmed -gt $before ]]; then
+                printf '%b%s%b\n' "${GREEN}${ICON_SUCCESS}${NC} ${prefix}" "$name" " ${GRAY}, $(bytes_to_human "${SLIM_APP_BYTES[idx]}")${NC}"
+            elif [[ ${#SLIM_FAILED_REASONS[@]} -gt $failed_before ]]; then
+                printf '%b%s%b%s%b\n' "${YELLOW}${ICON_WARNING}${NC} ${prefix}" "$name" " ${GRAY}, " \
+                    "$(mole_terminal_safe_text "${SLIM_FAILED_REASONS[failed_before]}")" "$NC"
+            fi
+        fi
         [[ $slim_rc -eq 0 ]] || break
     done
     log_operation_session_end "$MOLE_CURRENT_COMMAND" "$total_slimmed" "$((total_freed_bytes / 1024))"

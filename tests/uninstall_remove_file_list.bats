@@ -785,6 +785,7 @@ SCRIPT
 }
 
 @test "uninstall records access denial from the actual direct Trash mover" {
+    mole_test_fake_command mv 'printf "mv: Permission denied\n" >&2; exit 1'
     run /bin/bash --noprofile --norc <<'SCRIPT'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -796,7 +797,6 @@ export MOLE_UNINSTALL_MODE=1
 victim="$HOME/Library/Group Containers/com.example.Privacy"
 mkdir -p "$victim"
 _mole_should_refuse_live_user_cache_path() { return 1; }
-mv() { printf 'mv: Permission denied\n' >&2; return 1; }
 osascript() { echo unexpected-Finder >> "$HOME/unexpected"; return 99; }
 safe_remove() { echo unexpected-delete >> "$HOME/unexpected"; return 99; }
 collect() {
@@ -883,4 +883,68 @@ count=$(remove_file_list "$data" false "$BUNDLE_ID" "$app") || rc=$?
 EOF
         [ "$status" -eq 0 ] || { echo "bundle id $id: $output"; return 1; }
     done
+}
+
+@test "UUID container owner is checked after sizing and at the final Trash sink" {
+    run bash -c "$(prelude)"'
+container="$HOME/Library/Containers/ABCDEFAB-1234-1234-1234-123456789ABC"
+mkdir -p "$container"
+printf "%s\n" '\''{"MCMMetadataIdentifier":"com.example.Gizmo"}'\'' > "$container/.com.apple.containermanagerd.metadata.plist"
+get_path_size_kb() {
+    printf "%s\n" '\''{"MCMMetadataIdentifier":"com.other.Gizmo"}'\'' > "$container/.com.apple.containermanagerd.metadata.plist"
+    printf "1\n"
+}
+remove_file_list "$container" false com.example.Gizmo
+[[ -d "$container" ]] || exit 1
+grep -F ownership-unverified "$MOLE_DELETE_LOG"
+'
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "native manifest replacement during sizing retains the new owner" {
+    run bash -c "$(prelude)"'
+hosts="$HOME/Library/Application Support/Browser/NativeMessagingHosts"
+mkdir -p "$hosts"
+manifest="$hosts/gizmo.json"
+printf '\''{"path":"%s/Applications/Gizmo.app/Contents/MacOS/host"}\n'\'' "$HOME" > "$manifest"
+get_path_size_kb() {
+    printf "%s\n" '\''{"path":"/Applications/Other.app/host"}'\'' > "$manifest"
+    printf "1\n"
+}
+remove_file_list "$manifest" false com.example.Gizmo "$HOME/Applications/Gizmo.app"
+[[ -f "$manifest" ]] || exit 1
+grep -F ownership-unverified "$MOLE_DELETE_LOG"
+'
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "UUID container final guard retains changed metadata after the Trash identity check" {
+    run bash -c "$(prelude)"'
+container="$HOME/Library/Containers/ABCDEFAB-1234-1234-1234-123456789ABC"
+mkdir -p "$container"
+printf "%s\n" '\''{"MCMMetadataIdentifier":"com.example.Gizmo"}'\'' > "$container/.com.apple.containermanagerd.metadata.plist"
+eval "$(declare -f _mole_trash_target_still_safe | sed '\''1s/_mole_trash_target_still_safe/_original_trash_safe/'\'')"
+_mole_trash_target_still_safe() {
+    _original_trash_safe "$@" || return $?
+    printf "%s\n" '\''{"MCMMetadataIdentifier":"com.other.Gizmo"}'\'' > "$container/.com.apple.containermanagerd.metadata.plist"
+}
+remove_file_list "$container" false com.example.Gizmo
+[[ -d "$container" ]] || exit 1
+grep -F ownership-unverified "$MOLE_DELETE_LOG"
+'
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "UUID exact owner uses normal Trash and permanent sinks" {
+    run bash -c "$(prelude)"'
+for mode in trash permanent; do
+    export MOLE_DELETE_MODE="$mode"
+    container="$HOME/Library/Containers/ABCDEFAB-1234-1234-1234-123456789ABC"
+    mkdir -p "$container"
+    printf "%s\n" '\''{"MCMMetadataIdentifier":"com.example.Gizmo"}'\'' > "$container/.com.apple.containermanagerd.metadata.plist"
+    remove_file_list "$container" false com.example.Gizmo
+    [[ ! -d "$container" ]] || exit 1
+done
+'
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }

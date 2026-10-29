@@ -6,6 +6,31 @@ _MOLE_CACHES_MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _MOLE_CACHES_MODULE_PATH="$_MOLE_CACHES_MODULE_DIR/${BASH_SOURCE[0]##*/}"
 # shellcheck disable=SC1091
 source "$_MOLE_CACHES_MODULE_DIR/purge_shared.sh"
+# Analyzers before 1.48.0 wrote one flat `<hash>.cache` per scanned directory
+# straight into ~/.cache/mole with no cap; one user reached 1.88M files and
+# 7.82GB, and listing that directory froze Mole Mac's Analyze and even `ls`.
+# The analyzer sweeps them on its own start, which users who never run
+# `mo analyze` again never reach, so clean starts the same sweep. It matches
+# the analyzer's predicate exactly (regular `*.cache` files and the overview
+# snapshot at the top level, never the shell's state files or subdirectories),
+# runs in the background because a large store takes minutes to unlink, and is
+# resumable: whatever one run does not reach the next run picks up.
+sweep_legacy_analyzer_cache_now() {
+    local root="$1"
+    [[ -d "$root" && ! -L "$root" ]] || return 0
+    local -a legacy_match=(-mindepth 1 -maxdepth 1 -type f \( -name '*.cache' -o -name 'overview_sizes.json' \))
+    command find "$root" "${legacy_match[@]}" -delete 2> /dev/null || true # SAFE: Mole's own regenerable analyzer cache, top-level regular files only
+}
+
+start_legacy_analyzer_cache_sweep() {
+    [[ "${DRY_RUN:-false}" == "true" || "${MOLE_DRY_RUN:-0}" == "1" ]] && return 0
+    local root="$HOME/.cache/mole"
+    [[ -d "$root" && ! -L "$root" ]] || return 0
+    [[ -n "$(command find "$root" -mindepth 1 -maxdepth 1 -type f -name '*.cache' -print -quit 2> /dev/null)" ]] || return 0
+    (sweep_legacy_analyzer_cache_now "$root") < /dev/null > /dev/null 2>&1 &
+    disown 2> /dev/null || true
+}
+
 # Preflight TCC prompts once to avoid mid-run interruptions.
 check_tcc_permissions() {
     [[ -t 1 ]] || return 0

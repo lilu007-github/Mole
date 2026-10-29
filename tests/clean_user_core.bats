@@ -685,7 +685,7 @@ EOF
     done
 }
 
-@test "a custom whitelist still protects system caches, Poetry virtualenvs and the renv cache" {
+@test "a custom whitelist still protects system caches, Kitty, Poetry virtualenvs and the renv cache" {
     # clean_user_essentials sweeps every child of ~/Library/Caches, and
     # load_mole_whitelist replaces DEFAULT_WHITELIST_PATTERNS wholesale once a
     # user saves one entry of their own. Anything that breaks macOS search,
@@ -696,6 +696,7 @@ EOF
         "$test_home/Library/Caches/com.apple.spotlight" \
         "$test_home/Library/Caches/com.apple.FontRegistry" \
         "$test_home/Library/Caches/CloudKit" \
+        "$test_home/Library/Caches/kitty/graphics-cache" \
         "$test_home/Library/Caches/pypoetry/virtualenvs/proj-abc123" \
         "$test_home/Library/Caches/org.R-project.R/R/renv/cache/v5/pkg" \
         "$test_home/Library/Caches/com.example.unprotected"
@@ -710,6 +711,8 @@ for probe in \
     "$HOME/Library/Caches/com.apple.spotlight" \
     "$HOME/Library/Caches/com.apple.FontRegistry" \
     "$HOME/Library/Caches/CloudKit" \
+    "$HOME/Library/Caches/kitty" \
+    "$HOME/Library/Caches/kitty/graphics-cache" \
     "$HOME/Library/Caches/pypoetry/virtualenvs/proj-abc123" \
     "$HOME/Library/Caches/org.R-project.R/R/renv/cache/v5/pkg" \
     "$HOME/Library/Caches/org.R-project.R" \
@@ -736,6 +739,8 @@ EOF
         return 1
     }
     [[ "$output" == *"PROTECTED=Library/Caches/com.apple.spotlight"* ]] || return 1
+    [[ "$output" == *"PROTECTED=Library/Caches/kitty"* ]] || return 1
+    [[ "$output" == *"PROTECTED=Library/Caches/kitty/graphics-cache"* ]] || return 1
     [[ "$output" == *"PROTECTED=Library/Caches/pypoetry/virtualenvs/proj-abc123"* ]] || return 1
     [[ "$output" == *"PROTECTED=Library/Caches/org.R-project.R/R/renv/cache/v5/pkg"* ]] || return 1
     # The sweep removes top-level children of ~/Library/Caches, so the parent
@@ -1262,6 +1267,67 @@ EOF
     [[ "$output" == *"Messages sticker cache"* ]] || return 1
     [[ "$output" == *"Messages preview attachment cache"* ]] || return 1
     [[ "$output" == *"Messages preview sticker cache"* ]]
+}
+
+@test "support cleanup stops on scan signals but continues after ordinary failures and timeouts" {
+    for scan_rc in 0 1 124 130 143; do
+        run env HOME="$HOME/support-scan-$scan_rc" PROJECT_ROOT="$PROJECT_ROOT" SCAN_RC="$scan_rc" \
+            MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+mkdir -p "$HOME/Library/Application Support/CrashReporter"
+safe_find_delete() { echo SCAN_REACHED; return "$SCAN_RC"; }
+safe_clean() { printf 'LATER:%s\n' "${*: -1}"; }
+rc=0; clean_support_app_data || rc=$?
+printf 'RC=%s\n' "$rc"
+EOF
+        [ "$status" -eq 0 ] || return 1
+        [[ "$output" == *SCAN_REACHED* ]] || return 1
+        case "$scan_rc" in
+            130 | 143)
+                [[ "$output" == *"RC=$scan_rc"* ]] || return 1
+                [[ "$output" != *LATER:* ]] || return 1
+                ;;
+            *)
+                [[ "$output" == *"RC=0"* ]] || return 1
+                [[ "$output" == *"LATER:Messages sticker cache"* ]] || return 1
+                ;;
+        esac
+    done
+}
+
+@test "app cache cleanup propagates support signals before the next cache group" {
+    for support_rc in 0 1 124 130 143; do
+        run env HOME="$HOME/support-parent-$support_rc" PROJECT_ROOT="$PROJECT_ROOT" SUPPORT_RC="$support_rc" \
+            MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+safe_clean() { :; }
+_clean_user_log_directory() { :; }
+_clean_incomplete_downloads() { :; }
+clean_support_app_data() { echo SUPPORT_REACHED; return "$SUPPORT_RC"; }
+# Stop at this existing boundary so the positive control does not scan real containers.
+_clean_wallpaper_renders() { echo NEXT_GROUP; return 7; }
+rc=0; clean_app_caches || rc=$?
+printf 'RC=%s\n' "$rc"
+EOF
+        [ "$status" -eq 0 ] || return 1
+        [[ "$output" == *SUPPORT_REACHED* ]] || return 1
+        case "$support_rc" in
+            130 | 143)
+                [[ "$output" == *"RC=$support_rc"* ]] || return 1
+                [[ "$output" != *NEXT_GROUP* ]] || return 1
+                ;;
+            *)
+                [[ "$output" == *"RC=7"* ]] || return 1
+                [[ "$output" == *NEXT_GROUP* ]] || return 1
+                ;;
+        esac
+    done
 }
 
 @test "clean_app_caches never hands a third-party container to safe_clean" {
@@ -2859,6 +2925,62 @@ EOF
     [[ "$output" == *"FOUND: regular_file.txt"* ]]
 }
 
+run_external_volume_metadata_probe() {
+    local metadata="$1" probe_status="${2:-0}"
+    local fixture_home="$BATS_TEST_TMPDIR/external-metadata"
+    mkdir -p "$fixture_home"
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" MOCK_DISK_INFO="$metadata" \
+        MOCK_DISK_STATUS="$probe_status" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+mkdir -p "$HOME/bin" "$HOME/volumes/USB"
+cat > "$HOME/bin/diskutil" <<'MOCK'
+#!/bin/bash
+printf '%s\n' "$MOCK_DISK_INFO"
+exit "$MOCK_DISK_STATUS"
+MOCK
+chmod +x "$HOME/bin/diskutil"
+export PATH="$HOME/bin:$PATH"
+export MOLE_EXTERNAL_VOLUMES_ROOT="$HOME/volumes"
+validate_external_volume_target "$HOME/volumes/USB"
+EOF
+}
+
+@test "external volume metadata rejects failed probes even with a complete external plist" {
+    for probe_status in 1 124 137; do
+        run_external_volume_metadata_probe '<plist version="1.0"><dict><key>Internal</key><false/><key>BusProtocol</key><string>USB</string></dict></plist>' "$probe_status"
+        [ "$status" -ne 0 ] || return 1
+    done
+}
+
+@test "external volume metadata requires a typed external fact" {
+    for field in '' '<key>Internal</key><string>false</string>' '<key>Internal</key><integer>0</integer>'; do
+        run_external_volume_metadata_probe "<plist version=\"1.0\"><dict>$field<key>BusProtocol</key><string>USB</string></dict></plist>"
+        [ "$status" -ne 0 ] || return 1
+    done
+}
+
+@test "external volume metadata refuses malformed and internal plists" {
+    for metadata in '<plist><dict>' '<plist version="1.0"><dict><key>Internal</key><true/><key>BusProtocol</key><string>USB</string></dict></plist>'; do
+        run_external_volume_metadata_probe "$metadata"
+        [ "$status" -ne 0 ] || return 1
+    done
+}
+
+@test "external volume metadata refuses missing and network protocols" {
+    for protocol in '' SMB NFS AFP CIFS WebDAV; do
+        run_external_volume_metadata_probe "<plist version=\"1.0\"><dict><key>Internal</key><false/><key>BusProtocol</key><string>$protocol</string></dict></plist>"
+        [ "$status" -ne 0 ] || return 1
+    done
+}
+
+@test "external volume metadata accepts a complete local external plist" {
+    run_external_volume_metadata_probe '<plist version="1.0"><dict><key>Internal</key><false/><key>BusProtocol</key><string>USB</string></dict></plist>'
+    [ "$status" -eq 0 ]
+    [[ "$output" == */volumes/USB ]]
+}
+
 @test "validate_external_volume_target canonicalizes root before comparing target" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
@@ -2869,7 +2991,7 @@ mock_bin="$HOME/bin"
 mkdir -p "$mock_bin"
 cat > "$mock_bin/diskutil" <<'MOCK'
 #!/bin/bash
-exit 0
+printf '%s\n' '<plist version="1.0"><dict><key>Internal</key><false/><key>BusProtocol</key><string>USB</string></dict></plist>'
 MOCK
 chmod +x "$mock_bin/diskutil"
 export PATH="$mock_bin:$PATH"
@@ -2887,6 +3009,46 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"RESOLVED="*"/USB"* ]] || return 1
     [[ "$output" != *"must be under"* ]]
+}
+
+@test "validate_external_volume_target refuses internal volumes and an empty answer (#1818)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+
+mock_bin="$HOME/bin-disk-location"
+mkdir -p "$mock_bin"
+cat > "$mock_bin/diskutil" <<'MOCK'
+#!/bin/bash
+printf '%s\n' "$MOCK_DISK_INFO"
+MOCK
+chmod +x "$mock_bin/diskutil"
+export PATH="$mock_bin:$PATH"
+
+volumes="$(mktemp -d "$HOME/ext-volumes.XXXXXX")"
+mkdir -p "$volumes/Data"
+export MOLE_EXTERNAL_VOLUMES_ROOT="$volumes"
+
+# Typed metadata works independently of the human-readable diskutil labels.
+export MOCK_DISK_INFO='<plist version="1.0"><dict><key>Internal</key><true/><key>BusProtocol</key><string>Apple Fabric</string></dict></plist>'
+validate_external_volume_target "$volumes/Data" > /dev/null && echo "ACCEPTED_INTERNAL"
+
+# A USB drive stays accepted.
+export MOCK_DISK_INFO='<plist version="1.0"><dict><key>Internal</key><false/><key>BusProtocol</key><string>USB</string></dict></plist>'
+validate_external_volume_target "$volumes/Data" > /dev/null && echo "ACCEPTED_EXTERNAL"
+
+# No answer (diskutil missing, failed or timed out) cannot prove external.
+export MOCK_DISK_INFO=''
+validate_external_volume_target "$volumes/Data" > /dev/null && echo "ACCEPTED_EMPTY" || true
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Refusing to clean an internal volume"* ]] || return 1
+    [[ "$output" != *"ACCEPTED_INTERNAL"* ]] || return 1
+    [[ "$output" != *"ACCEPTED_EMPTY"* ]] || return 1
+    [[ "$output" == *"diskutil could not describe"* ]] || return 1
+    [[ "$output" == *"ACCEPTED_EXTERNAL"* ]]
 }
 
 @test "clean_app_caches caps precise sandbox size scans when many containers exist" {

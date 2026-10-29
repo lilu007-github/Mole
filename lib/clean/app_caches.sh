@@ -58,9 +58,86 @@ _simulator_app_cache_delete_guard_allows() {
     mole_clean_process_guard _simulator_cleanup_process_state "Simulator or CoreSimulator running"
 }
 
+# Per-device leaves Mole Mac removes whole, only on a device whose
+# device.plist reads shut down (state 1) and not deleted; an unreadable
+# plist is unknown, so its device is left alone. The poster store is only
+# ever removed whole: with it gone the next boot rebuilds it as a new device
+# does, while removing only its gallery descriptors left `staticdescriptors`
+# empty and the gallery failing to render (iOS 27.1, 2026-10-28). Empty
+# leaves are not listed, so an idle Mac reports nothing.
+_SIMULATOR_DEVICE_LEAVES=(
+    "data/private/var/MobileAsset/AssetsV2"
+    "data/var/db/diagnostics"
+    "data/var/db/uuidtext"
+    "data/Library/Caches"
+    "data/Library/Application Support/PRBPosterExtensionDataStore"
+)
+
+_simulator_device_is_shut_down() {
+    local plist="$1/device.plist"
+    [[ -f "$plist" ]] || return 1
+    local state="" deleted=""
+    state=$(run_with_timeout 2 /usr/bin/plutil -extract state raw -o - "$plist" 2> /dev/null) || return 1
+    [[ "$state" == "1" ]] || return 1
+    deleted=$(run_with_timeout 2 /usr/bin/plutil -extract isDeleted raw -o - "$plist" 2> /dev/null) || deleted=""
+    [[ "$deleted" != "true" ]]
+}
+
+# A leaf qualifies only at its listed place under the Devices root, with no
+# link anywhere between the device folder and the leaf, on a shut-down device.
+_simulator_device_leaf_is_eligible() {
+    local path="$1"
+    local devices_root="$HOME/Library/Developer/CoreSimulator/Devices"
+    local device="${path%%/data/*}"
+    local leaf="${path#"$device"/}"
+    [[ "$device" != "$path" && "${device%/*}" == "$devices_root" ]] || return 1
+    [[ -d "$device" && ! -L "$device" && -d "$path" && ! -L "$path" ]] || return 1
+    local known="" candidate
+    for candidate in "${_SIMULATOR_DEVICE_LEAVES[@]}"; do
+        [[ "$leaf" == "$candidate" ]] && known=1
+    done
+    [[ -n "$known" ]] || return 1
+    local device_physical="" leaf_physical=""
+    device_physical=$(cd "$device" 2> /dev/null && pwd -P) || return 1
+    leaf_physical=$(cd "$path" 2> /dev/null && pwd -P) || return 1
+    [[ "$leaf_physical" == "$device_physical/$leaf" ]] || return 1
+    _simulator_device_is_shut_down "$device"
+}
+
+# Prints one existing, non-empty leaf per line.
+_simulator_device_leaf_targets() {
+    local devices_root="$HOME/Library/Developer/CoreSimulator/Devices"
+    [[ -d "$devices_root" ]] || return 0
+    local device leaf target
+    for device in "$devices_root"/*; do
+        [[ -d "$device" && ! -L "$device" ]] || continue
+        _simulator_device_is_shut_down "$device" || continue
+        for leaf in "${_SIMULATOR_DEVICE_LEAVES[@]}"; do
+            target="$device/$leaf"
+            [[ -n "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit 2> /dev/null)" ]] || continue
+            _simulator_device_leaf_is_eligible "$target" || continue
+            printf '%s\n' "$target"
+        done
+    done
+}
+
+# Delete-time callback: the simulator probe first, whose refusal stops the
+# batch, then this leaf's own device read again, whose refusal skips only it.
+_simulator_device_leaf_delete_guard_allows() {
+    local path="${1:-}"
+    _MOLE_SAFE_CLEAN_SKIP_PATH=""
+    _simulator_app_cache_delete_guard_allows || return 1
+    [[ -n "$path" ]] || return 0
+    _MOLE_SAFE_CLEAN_SKIP_PATH="$path"
+    _MOLE_CLEAN_GUARD_REASON="simulator device no longer shut down"
+    _simulator_device_leaf_is_eligible "$path" || return 1
+    _MOLE_SAFE_CLEAN_SKIP_PATH=""
+    return 0
+}
+
 _defer_app_cache_guard_family() {
     case "$1" in
-        _simulator_app_cache_delete_guard_allows) mole_defer_cleanup_family "Simulator" ;;
+        _simulator_app_cache_delete_guard_allows | _simulator_device_leaf_delete_guard_allows) mole_defer_cleanup_family "Simulator" ;;
         _autodesk_cache_delete_guard_allows) mole_defer_cleanup_family "Autodesk" ;;
         *) mole_defer_cleanup_family "Xcode" ;;
     esac
@@ -261,10 +338,16 @@ clean_xcode_derived_data() {
 # Xcode and iOS tooling.
 clean_xcode_tools() {
     local simulator_has_targets=false
-    if mole_cleanup_targets_exist \
-        "$HOME/Library/Developer/CoreSimulator/Caches"/* \
-        "$HOME/Library/Developer/CoreSimulator/Devices"/*/data/tmp/* \
-        "$HOME/Library/Logs/CoreSimulator"/*; then
+    local -a simulator_device_leaves=()
+    local simulator_leaf
+    while IFS= read -r simulator_leaf; do
+        [[ -n "$simulator_leaf" ]] && simulator_device_leaves+=("$simulator_leaf")
+    done < <(_simulator_device_leaf_targets)
+    if [[ ${#simulator_device_leaves[@]} -gt 0 ]] ||
+        mole_cleanup_targets_exist \
+            "$HOME/Library/Developer/CoreSimulator/Caches"/* \
+            "$HOME/Library/Developer/CoreSimulator/Devices"/*/data/tmp/* \
+            "$HOME/Library/Logs/CoreSimulator"/*; then
         simulator_has_targets=true
     fi
 
@@ -283,6 +366,13 @@ clean_xcode_tools() {
                 "Simulator temp files" \
                 ~/Library/Developer/CoreSimulator/Devices/*/data/tmp/* \
                 "Simulator temp files" || return 0
+            if [[ ${#simulator_device_leaves[@]} -gt 0 ]]; then
+                _app_cache_safe_clean_guarded \
+                    _simulator_device_leaf_delete_guard_allows \
+                    "Simulator device data" \
+                    "${simulator_device_leaves[@]}" \
+                    "Simulator device data" || return 0
+            fi
             _app_cache_safe_clean_guarded \
                 _simulator_app_cache_delete_guard_allows \
                 "CoreSimulator logs" \
@@ -432,37 +522,50 @@ clean_editor_obsolete_extensions() {
         done < <(_mole_obsolete_extension_keys "$obsolete_file")
     done
 }
+# CodeBuddyExtension is shared by the CodeBuddy editors and WorkBuddy.
+# A closed editor alone does not establish that these caches are idle.
+_codebuddy_shared_cache_running() {
+    mole_pgrep_any -x 'CodeBuddy|CodeBuddy CN|WorkBuddy' \
+        -f '/(CodeBuddy( CN)?|WorkBuddy)[.]app/'
+}
+
 # Code editors.
 clean_code_editors() {
-    safe_clean ~/Library/Application\ Support/Code/logs/* "VS Code logs"
-    safe_clean ~/Library/Application\ Support/Code/Cache/* "VS Code cache"
-    safe_clean ~/Library/Application\ Support/Code/CachedExtensionVSIXs/* "VS Code extension cache"
-    safe_clean ~/Library/Application\ Support/Cursor/CachedExtensionVSIXs/* "Cursor extension cache"
-    safe_clean ~/Library/Application\ Support/Code/CachedData/* "VS Code data cache"
-    safe_clean ~/Library/Application\ Support/Code/WebStorage/*/CacheStorage/* "VS Code webview cache"
+    mole_safe_clean_app_cache "Visual Studio Code" ~/Library/Application\ Support/Code/logs/* "VS Code logs"
+    mole_safe_clean_app_cache "Visual Studio Code" ~/Library/Application\ Support/Code/Cache/* "VS Code cache"
+    mole_safe_clean_app_cache "Visual Studio Code" ~/Library/Application\ Support/Code/CachedExtensionVSIXs/* "VS Code extension cache"
+    mole_safe_clean_app_cache "Cursor" ~/Library/Application\ Support/Cursor/CachedExtensionVSIXs/* "Cursor extension cache"
+    mole_safe_clean_app_cache "Visual Studio Code" ~/Library/Application\ Support/Code/CachedData/* "VS Code data cache"
+    mole_safe_clean_app_cache "Visual Studio Code" ~/Library/Application\ Support/Code/WebStorage/*/CacheStorage/* "VS Code webview cache"
     safe_clean ~/Library/Caches/com.sublimetext.*/* "Sublime Text cache"
     safe_clean ~/Library/Caches/Zed/* "Zed cache"
     # Zed npm caches: node/cache (system-node scratch) and node/node-v*/cache
     # (per-version managed runtime, see #88); keep editor state under db/ untouched.
-    safe_clean ~/Library/Application\ Support/Zed/node/cache/* "Zed npm cache"
-    safe_clean ~/Library/Application\ Support/Zed/node/node-v*/cache/* "Zed npm cache"
+    mole_safe_clean_app_cache "Zed" ~/Library/Application\ Support/Zed/node/cache/* "Zed npm cache"
+    mole_safe_clean_app_cache "Zed" ~/Library/Application\ Support/Zed/node/node-v*/cache/* "Zed npm cache"
     safe_clean ~/Library/Logs/Zed/* "Zed logs"
     clean_editor_obsolete_extensions
-    # CodeBuddy Extension (VS Code fork, Electron)
+    # Shared desktop extension caches have more than one possible owner.
     if [[ -d ~/Library/Application\ Support/CodeBuddyExtension ]]; then
-        safe_clean ~/Library/Application\ Support/CodeBuddyExtension/Cache/* "CodeBuddy Extension cache"
-        safe_clean ~/Library/Application\ Support/CodeBuddyExtension/logs/* "CodeBuddy Extension logs"
+        local codebuddy_rc=0
+        _dev_safe_clean_process_guarded _codebuddy_shared_cache_running "CodeBuddy" "CodeBuddy Extension cache" \
+            ~/Library/Application\ Support/CodeBuddyExtension/Cache/* "CodeBuddy Extension cache" || codebuddy_rc=$?
+        [[ $codebuddy_rc -le 1 ]] || return "$codebuddy_rc"
+        codebuddy_rc=0
+        _dev_safe_clean_process_guarded _codebuddy_shared_cache_running "CodeBuddy" "CodeBuddy Extension logs" \
+            ~/Library/Application\ Support/CodeBuddyExtension/logs/* "CodeBuddy Extension logs" || codebuddy_rc=$?
+        [[ $codebuddy_rc -le 1 ]] || return "$codebuddy_rc"
     fi
     # CodeBuddy CN (VS Code fork, Electron)
     if [[ -d ~/Library/Application\ Support/CodeBuddy\ CN ]]; then
-        safe_clean ~/Library/Application\ Support/CodeBuddy\ CN/Cache/* "CodeBuddy CN cache"
-        safe_clean ~/Library/Application\ Support/CodeBuddy\ CN/CachedData/* "CodeBuddy CN cached data"
-        safe_clean ~/Library/Application\ Support/CodeBuddy\ CN/CachedExtensionVSIXs/* "CodeBuddy CN extension cache"
-        safe_clean ~/Library/Application\ Support/CodeBuddy\ CN/Code\ Cache/* "CodeBuddy CN code cache"
-        safe_clean ~/Library/Application\ Support/CodeBuddy\ CN/GPUCache/* "CodeBuddy CN GPU cache"
-        safe_clean ~/Library/Application\ Support/CodeBuddy\ CN/DawnGraphiteCache/* "CodeBuddy CN Dawn cache"
-        safe_clean ~/Library/Application\ Support/CodeBuddy\ CN/DawnWebGPUCache/* "CodeBuddy CN WebGPU cache"
-        safe_clean ~/Library/Application\ Support/CodeBuddy\ CN/logs/* "CodeBuddy CN logs"
+        mole_safe_clean_app_cache "CodeBuddy CN" ~/Library/Application\ Support/CodeBuddy\ CN/Cache/* "CodeBuddy CN cache"
+        mole_safe_clean_app_cache "CodeBuddy CN" ~/Library/Application\ Support/CodeBuddy\ CN/CachedData/* "CodeBuddy CN cached data"
+        mole_safe_clean_app_cache "CodeBuddy CN" ~/Library/Application\ Support/CodeBuddy\ CN/CachedExtensionVSIXs/* "CodeBuddy CN extension cache"
+        mole_safe_clean_app_cache "CodeBuddy CN" ~/Library/Application\ Support/CodeBuddy\ CN/Code\ Cache/* "CodeBuddy CN code cache"
+        mole_safe_clean_app_cache "CodeBuddy CN" ~/Library/Application\ Support/CodeBuddy\ CN/GPUCache/* "CodeBuddy CN GPU cache"
+        mole_safe_clean_app_cache "CodeBuddy CN" ~/Library/Application\ Support/CodeBuddy\ CN/DawnGraphiteCache/* "CodeBuddy CN Dawn cache"
+        mole_safe_clean_app_cache "CodeBuddy CN" ~/Library/Application\ Support/CodeBuddy\ CN/DawnWebGPUCache/* "CodeBuddy CN WebGPU cache"
+        mole_safe_clean_app_cache "CodeBuddy CN" ~/Library/Application\ Support/CodeBuddy\ CN/logs/* "CodeBuddy CN logs"
     fi
 }
 # Lark / Feishu desktop embeds a Chromium webview (the "aha" explorer profile)
@@ -900,9 +1003,12 @@ clean_wechat_container_caches() {
 
 # Communication apps.
 clean_communication_apps() {
-    safe_clean ~/Library/Application\ Support/discord/Cache/* "Discord cache"
-    safe_clean ~/Library/Application\ Support/legcord/Cache/* "Legcord cache"
-    safe_clean ~/Library/Application\ Support/Slack/Cache/* "Slack cache"
+    mole_safe_clean_app_cache "Discord" ~/Library/Application\ Support/discord/Cache/* "Discord cache"
+    mole_safe_clean_app_cache "Legcord" ~/Library/Application\ Support/legcord/Cache/* "Legcord cache"
+    # Vesktop moves Electron's session data to sessionData; its vencordFiles sibling stays.
+    mole_safe_clean_app_cache "Vesktop" ~/Library/Application\ Support/vesktop/sessionData/Cache/* "Vesktop cache"
+    mole_safe_clean_app_cache "Vesktop" ~/Library/Application\ Support/vesktop/sessionData/Code\ Cache/* "Vesktop code cache"
+    mole_safe_clean_app_cache "Slack" ~/Library/Application\ Support/Slack/Cache/* "Slack cache"
     safe_clean ~/Library/Caches/us.zoom.xos/* "Zoom cache"
     safe_clean ~/Library/Caches/com.tencent.xinWeChat/* "WeChat cache"
     safe_clean ~/Library/Caches/ru.keepcoder.Telegram/* "Telegram cache"
@@ -922,12 +1028,12 @@ clean_communication_apps() {
     clean_feishu_service_worker_caches
     clean_notion_service_worker_caches
     if [[ -d ~/Library/Application\ Support/Microsoft/Teams ]]; then
-        safe_clean ~/Library/Application\ Support/Microsoft/Teams/Cache/* "Microsoft Teams legacy cache"
-        safe_clean ~/Library/Application\ Support/Microsoft/Teams/Application\ Cache/* "Microsoft Teams legacy application cache"
-        safe_clean ~/Library/Application\ Support/Microsoft/Teams/Code\ Cache/* "Microsoft Teams legacy code cache"
-        safe_clean ~/Library/Application\ Support/Microsoft/Teams/GPUCache/* "Microsoft Teams legacy GPU cache"
-        safe_clean ~/Library/Application\ Support/Microsoft/Teams/logs/* "Microsoft Teams legacy logs"
-        safe_clean ~/Library/Application\ Support/Microsoft/Teams/tmp/* "Microsoft Teams legacy temp files"
+        mole_safe_clean_app_cache "Microsoft Teams" ~/Library/Application\ Support/Microsoft/Teams/Cache/* "Microsoft Teams legacy cache"
+        mole_safe_clean_app_cache "Microsoft Teams" ~/Library/Application\ Support/Microsoft/Teams/Application\ Cache/* "Microsoft Teams legacy application cache"
+        mole_safe_clean_app_cache "Microsoft Teams" ~/Library/Application\ Support/Microsoft/Teams/Code\ Cache/* "Microsoft Teams legacy code cache"
+        mole_safe_clean_app_cache "Microsoft Teams" ~/Library/Application\ Support/Microsoft/Teams/GPUCache/* "Microsoft Teams legacy GPU cache"
+        mole_safe_clean_app_cache "Microsoft Teams" ~/Library/Application\ Support/Microsoft/Teams/logs/* "Microsoft Teams legacy logs"
+        mole_safe_clean_app_cache "Microsoft Teams" ~/Library/Application\ Support/Microsoft/Teams/tmp/* "Microsoft Teams legacy temp files"
     fi
     clean_wechat_container_caches
 }
@@ -1949,12 +2055,12 @@ clean_system_utils() {
     safe_clean ~/Library/Application\ Support/WeType/DictUpdate/* "WeType dict update cache"
     # mihomo-party proxy tool (Electron)
     if [[ -d ~/Library/Application\ Support/mihomo-party ]]; then
-        safe_clean ~/Library/Application\ Support/mihomo-party/Cache/* "mihomo-party cache"
-        safe_clean ~/Library/Application\ Support/mihomo-party/Code\ Cache/* "mihomo-party code cache"
-        safe_clean ~/Library/Application\ Support/mihomo-party/GPUCache/* "mihomo-party GPU cache"
-        safe_clean ~/Library/Application\ Support/mihomo-party/DawnGraphiteCache/* "mihomo-party Dawn cache"
-        safe_clean ~/Library/Application\ Support/mihomo-party/DawnWebGPUCache/* "mihomo-party WebGPU cache"
-        safe_clean ~/Library/Application\ Support/mihomo-party/logs/* "mihomo-party logs"
+        mole_safe_clean_app_cache "mihomo-party" ~/Library/Application\ Support/mihomo-party/Cache/* "mihomo-party cache"
+        mole_safe_clean_app_cache "mihomo-party" ~/Library/Application\ Support/mihomo-party/Code\ Cache/* "mihomo-party code cache"
+        mole_safe_clean_app_cache "mihomo-party" ~/Library/Application\ Support/mihomo-party/GPUCache/* "mihomo-party GPU cache"
+        mole_safe_clean_app_cache "mihomo-party" ~/Library/Application\ Support/mihomo-party/DawnGraphiteCache/* "mihomo-party Dawn cache"
+        mole_safe_clean_app_cache "mihomo-party" ~/Library/Application\ Support/mihomo-party/DawnWebGPUCache/* "mihomo-party WebGPU cache"
+        mole_safe_clean_app_cache "mihomo-party" ~/Library/Application\ Support/mihomo-party/logs/* "mihomo-party logs"
     fi
     # Stash proxy tool
     safe_clean ~/Library/Caches/ws.stash.app.mac/* "Stash cache"

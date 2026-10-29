@@ -39,6 +39,114 @@ setup() {
 	mkdir -p "$APPS_ROOT" "$TRASH_DIR"
 }
 
+# Drive the real menu without scanning or modifying installed applications.
+run_slim_selector() {
+	printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/slim-keys"
+	run slim_env COLUMNS=40 KEYS_FILE="$BATS_TEST_TMPDIR/slim-keys" \
+		KEY_STATE="$BATS_TEST_TMPDIR/slim-key-state" /bin/bash -c '
+		source "$1"
+		SLIM_APP_NAMES=("Same very long application name with hidden suffix Zulu" "Same very long application name with hidden suffix Alpha" Affinity)
+		SLIM_APP_PATHS=(/fixture/Zulu.app /fixture/Alpha.app /fixture/Affinity.app)
+		SLIM_APP_BYTES=(4096 8192 2048)
+		enter_alt_screen() { :; }
+		leave_alt_screen() { :; }
+		stty() { :; }
+		tput() { if [[ "$1" == cols ]]; then echo 40; else echo 16; fi; }
+		drain_pending_input() { :; }
+		read_key() {
+			local index key
+			index=$(cat "$KEY_STATE" 2>/dev/null || echo 0)
+			index=$((index + 1))
+			printf "%s\n" "$index" > "$KEY_STATE"
+			key=$(sed -n "${index}p" "$KEYS_FILE")
+			printf "%s\n" "${key:-QUIT}"
+		}
+		rc=0
+		select_slim_apps || rc=$?
+		printf "RESULT=%s RC=%s\n" "$MOLE_SELECTION_RESULT" "$rc"
+		[[ -z "${MOLE_MENU_FILTER_NAMES:-}" ]] || exit 1
+	' bash "$PROJECT_ROOT/bin/slim.sh"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+assert_slim_whitelist_change() {
+	[[ "$SLIM_HAVE_FAT_TOOLCHAIN" == "1" ]] || skip "needs clang and a developer directory"
+	local app phase="$1"
+	app=$(make_fixture_app)
+	mole_test_fake_command spctl 'exit 0'
+	run slim_env HOME="$BATS_TEST_TMPDIR/home-$phase" MOLE_SLIM_TEST_HOST_ARM64=1 /bin/bash -c '
+		source "$1"
+		slim_signing_team() { echo ABCDE12345; }
+		slim_preflight || exit 9
+		collect_slim_candidates || exit 8
+		mkdir -p "$HOME/.config/mole"
+		if [[ "$3" == before ]]; then
+			printf "%s\n" "$2" > "$HOME/.config/mole/whitelist"
+			ditto() { echo COPIED; return 1; }
+		else
+			protected_app="$2"
+			phase="$3"
+			slim_verify_copy() {
+				echo VERIFIED >&2
+				if [[ "$phase" == unavailable ]]; then
+					mkdir "$HOME/.config/mole/whitelist"
+				else
+					printf "%s\n" "$protected_app" > "$HOME/.config/mole/whitelist"
+				fi
+			}
+		fi
+		mole_delete() { echo DELETED; return 1; }
+		slim_one_app 0 || exit 7
+		echo "slimmed=$total_slimmed reason=${SLIM_FAILED_REASONS[*]}"
+	' bash "$PROJECT_ROOT/bin/slim.sh" "$app" "$phase"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" != *DELETED* && "$output" != *COPIED* ]] || { echo "$output"; return 1; }
+	if [[ "$phase" == unavailable ]]; then
+		[[ "$output" == *"slimmed=0 reason=whitelist unavailable"* ]] || { echo "$output"; return 1; }
+	else
+		[[ "$output" == *"slimmed=0 reason=whitelisted"* ]] || { echo "$output"; return 1; }
+	fi
+	[[ "$phase" == before || "$output" == *VERIFIED* ]] || return 1
+	[[ "$(lipo -archs "$app/Contents/MacOS/Fixture")" == *x86_64* ]] || return 1
+	[ -z "$(ls -A "$TRASH_DIR")" ]
+}
+
+@test "slim rows fit narrow terminals and keep short lists compact" {
+	run slim_env /bin/bash -c '
+		source "$1"
+		SLIM_APP_NAMES=(Affinity "Hopper Disassembler" "中文应用")
+		SLIM_APP_PATHS=(/fixture/Affinity.app /fixture/Hopper.app /fixture/Chinese.app)
+		SLIM_APP_BYTES=(1836098519 25585254 1024)
+		for COLUMNS in 39 40 41 54 79 80 81 119 120 121; do
+			export COLUMNS
+			list=$(print_slim_list)
+			while IFS= read -r row; do
+				width=$(get_display_width "$row")
+				[[ $width -le $COLUMNS ]] || { printf "overflow=%s width=%s\n" "$COLUMNS" "$width"; exit 1; }
+			done <<< "$list"
+			first=${list%%$'"'"'\n'"'"'*}
+			[[ $(get_display_width "$first") -le 32 ]] || { echo "short rows spread too far"; exit 1; }
+		done
+		SLIM_APP_NAMES=("A very long application name with a hidden suffix" "很长的中文应用名称用于检查显示宽度")
+		SLIM_APP_PATHS=(/fixture/Long.app /fixture/Chinese.app)
+		COLUMNS=40
+		while IFS= read -r row; do
+			[[ $(get_display_width "$row") -le 40 ]] || exit 1
+		done < <(print_slim_list)
+	' bash "$PROJECT_ROOT/bin/slim.sh"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "slim searches the full name beyond the displayed suffix" {
+	run_slim_selector CHAR:/ CHAR:a CHAR:l CHAR:p CHAR:h CHAR:a ENTER SPACE ENTER
+	[[ "$output" == *"RESULT=1 RC=0"* ]] || return 1
+}
+
+@test "slim name sorting keeps identities when displayed prefixes match" {
+	run_slim_selector CHAR:s DOWN ENTER
+	[[ "$output" == *"RESULT=1 RC=0"* ]] || return 1
+}
+
 # Build a signed bundle whose main executable and Frameworks dylib are nested
 # code, plus a universal tool in SharedSupport that the seal records by hash.
 make_fixture_app() {
@@ -72,6 +180,131 @@ slim_env() {
 		MOLE_DELETE_LOG="$BATS_TEST_TMPDIR/deletions.log" "$@"
 }
 
+
+@test "slim excludes whitelist paths from dry-run and noninteractive scans" {
+	[[ "$SLIM_HAVE_FAT_TOOLCHAIN" == "1" ]] || skip "needs clang and a developer directory"
+	local app
+	app=$(make_fixture_app)
+	cp -R "$app" "$APPS_ROOT/Keep.app"
+	mole_test_fake_command spctl 'exit 0'
+	run slim_env HOME="$BATS_TEST_TMPDIR/home" MOLE_SLIM_TEST_HOST_ARM64=1 /bin/bash -c '
+		source "$1"
+		slim_signing_team() { echo ABCDE12345; }
+		mkdir -p "$HOME/.config/mole"
+		for mode in --dry-run --debug; do
+			for pattern in "$2" "$2/Contents/MacOS/Fixture" "${2%/*}/Fi*.app"; do
+				printf "%s" "$pattern" > "$HOME/.config/mole/whitelist"
+				main "$mode" || exit 1
+				[[ "${SLIM_APP_NAMES[*]}" == Keep ]] || { echo "listed=${SLIM_APP_NAMES[*]}"; exit 2; }
+				unset MOLE_DRY_RUN
+			done
+		done
+		printf "%s\n" "${2%/*}" > "$HOME/.config/mole/whitelist"
+		main --dry-run || exit 3
+		[[ ${#SLIM_APP_PATHS[@]} -eq 0 ]] || exit 4
+		echo WHITELIST_OK
+	' bash "$PROJECT_ROOT/bin/slim.sh" "$app"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *WHITELIST_OK* ]] || return 1
+	[[ "$(lipo -archs "$app/Contents/MacOS/Fixture")" == *x86_64* ]] || return 1
+	[ -z "$(ls -A "$TRASH_DIR")" ]
+}
+
+@test "slim stops before scanning when its whitelist is unreadable" {
+	run slim_env HOME="$BATS_TEST_TMPDIR/home" MOLE_SLIM_TEST_HOST_ARM64=1 /bin/bash -c '
+		source "$1"
+		mkdir -p "$HOME/.config/mole/whitelist"
+		collect_slim_candidates() { echo SCANNED; return 1; }
+		main --dry-run
+	' bash "$PROJECT_ROOT/bin/slim.sh"
+	[ "$status" -ne 0 ] || { echo "$output"; return 1; }
+	[[ "$output" != *SCANNED* ]] || return 1
+	[[ "$output" == *whitelist* ]]
+}
+
+
+@test "slim reloads whitelist changes after scan" {
+	assert_slim_whitelist_change before
+}
+
+@test "slim reloads whitelist changes before swap" {
+	assert_slim_whitelist_change after
+}
+
+@test "slim retains the original when whitelist becomes unreadable before swap" {
+	assert_slim_whitelist_change unavailable
+}
+
+@test "slim scans one level of plain folders but not bundles, links or deeper folders (#1811)" {
+	mkdir -p "$APPS_ROOT/Top.app" "$APPS_ROOT/Utilities/Util.app" \
+		"$APPS_ROOT/Utilities/Deep/Deeper.app" "$APPS_ROOT/Outer.app/Inner.app" \
+		"$BATS_TEST_TMPDIR/elsewhere/Linked.app"
+	ln -s "$BATS_TEST_TMPDIR/elsewhere" "$APPS_ROOT/LinkedFolder"
+
+	mole_test_fake_command spctl 'exit 0'
+	run slim_env /bin/bash -c '
+		source "$1"
+		slim_skip_reason() { :; }
+		slim_signing_team() { echo ABCDE12345; }
+		slim_plan_app() { echo 1; }
+		mole_deletion_identity() { echo id; }
+		collect_slim_candidates || exit 8
+		printf "%s\n" "${SLIM_APP_PATHS[@]}" | sort
+	' bash "$PROJECT_ROOT/bin/slim.sh"
+
+	[ "$status" -eq 0 ]
+	[ "$output" = "$APPS_ROOT/Outer.app"$'\n'"$APPS_ROOT/Top.app"$'\n'"$APPS_ROOT/Utilities/Util.app" ]
+}
+
+@test "slim leaves out apps Gatekeeper already rejects but keeps unknown answers" {
+	mkdir -p "$APPS_ROOT/Notarized.app" "$APPS_ROOT/Unnotarized.app" "$APPS_ROOT/Offline.app"
+	mole_test_fake_command spctl 'case "$*" in *Unnotarized.app) exit 3 ;; *Offline.app) exit 1 ;; esac; exit 0'
+
+	run slim_env /bin/bash -c '
+		source "$1"
+		slim_skip_reason() { :; }
+		slim_signing_team() { echo ABCDE12345; }
+		slim_plan_app() { echo 1; }
+		mole_deletion_identity() { echo id; }
+		collect_slim_candidates || exit 8
+		printf "%s\n" "${SLIM_APP_PATHS[@]}" | sort
+	' bash "$PROJECT_ROOT/bin/slim.sh"
+
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[ "$output" = "$APPS_ROOT/Notarized.app"$'\n'"$APPS_ROOT/Offline.app" ]
+}
+
+@test "slim never thins an executable an enclosing seal lists as a plain file" {
+	[[ "$SLIM_HAVE_FAT_TOOLCHAIN" == "1" ]] || skip "needs clang and a developer directory"
+	local app="$APPS_ROOT/Outer.app"
+	local plugin="$app/Contents/Library/QuickLook/Plug.qlgenerator/Contents"
+	mkdir -p "$app/Contents/MacOS" "$app/Contents/_CodeSignature" "$plugin/MacOS" "$plugin/_CodeSignature"
+	cp "$FIXTURE_BIN_DIR/fat-exe" "$app/Contents/MacOS/Outer"
+	cp "$FIXTURE_BIN_DIR/fat-exe" "$plugin/MacOS/Plug"
+	plutil -create xml1 "$app/Contents/Info.plist"
+	plutil -insert CFBundleExecutable -string Outer "$app/Contents/Info.plist"
+	plutil -create xml1 "$plugin/Info.plist"
+	plutil -insert CFBundleExecutable -string Plug "$plugin/Info.plist"
+	printf 'plugin seal' > "$plugin/_CodeSignature/CodeResources"
+	printf 'outer seal' > "$app/Contents/_CodeSignature/CodeResources"
+
+	# ScreenFlow's shape: the plugin is signed, yet the app seals its
+	# executable by hash2, so thinning it breaks the app's own seal.
+	run slim_env /bin/bash -c '
+		source "$1"
+		app="$3"
+		slim_sealed_keys() {
+			[[ "$1" == "$app/Contents/_CodeSignature/CodeResources" ]] || return 0
+			printf "h\tLibrary/QuickLook/Plug.qlgenerator/Contents/MacOS/Plug\n"
+		}
+		slim_plan_app "$app" "$2" > /dev/null
+		cut -f1 "$2"
+	' bash "$PROJECT_ROOT/bin/slim.sh" "$BATS_TEST_TMPDIR/plan" "$app"
+
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[ "$output" = "Contents/MacOS/Outer" ]
+}
+
 @test "slim.sh rejects unknown options" {
 	run "$PROJECT_ROOT/bin/slim.sh" --unknown-option
 
@@ -96,6 +329,22 @@ slim_env() {
 
 	[ "$status" -eq 1 ]
 	[[ "$output" == *"needs an Apple Silicon Mac"* ]]
+}
+
+@test "slim reads the host from /usr/sbin/sysctl, not PATH (#1804)" {
+	[[ "$(/usr/sbin/sysctl -n hw.optional.arm64 2> /dev/null)" == "1" ]] || skip "needs an Apple Silicon host"
+	local bin="$BATS_TEST_TMPDIR/path-bin"
+	mkdir -p "$bin"
+	printf '#!/bin/sh\necho 0\n' > "$bin/sysctl"
+	chmod +x "$bin/sysctl"
+
+	run env HOME="$HOME" PATH="$bin:/usr/bin:/bin" MO_NO_OPLOG=1 MOLE_TEST_MODE=1 /bin/bash -c '
+		source "$1"
+		slim_host_is_apple_silicon && echo "apple-silicon"
+	' bash "$PROJECT_ROOT/bin/slim.sh"
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"apple-silicon"* ]]
 }
 
 @test "slim_fat_slices reads fat and fat64 headers the way lipo does" {
@@ -148,7 +397,7 @@ slim_env() {
 	[[ "$(file -b "$app/Contents/MacOS/Fixture")" == "Mach-O 64-bit executable arm64" ]]
 }
 
-@test "slim_cdhash_sealed_keys lists only files2 entries sealed by cdhash" {
+@test "slim_sealed_keys marks which files2 entries are sealed by cdhash" {
 	local plist="$BATS_TEST_TMPDIR/CodeResources"
 	cat > "$plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -197,11 +446,11 @@ PLIST
 	run /bin/bash -c '
 		export MOLE_TEST_MODE=1
 		source "$1"
-		slim_cdhash_sealed_keys "$2"
+		slim_sealed_keys "$2"
 	' bash "$PROJECT_ROOT/bin/slim.sh" "$plist"
 
 	[ "$status" -eq 0 ]
-	[ "$output" = $'Frameworks/Nested.framework\nHelpers/R&D tool' ]
+	[ "$output" = $'c\tFrameworks/Nested.framework\nc\tHelpers/R&D tool\nh\tLibraries/libffmpeg.dylib\nh\tResources/empty' ]
 }
 
 @test "slim_skip_reason keeps App Store, Apple, Rosetta and symlinked apps out" {
@@ -299,7 +548,8 @@ PLIST
 	local app before
 	app=$(make_fixture_app)
 	before=$(stat -f '%i' "$app/Contents/MacOS/Fixture")
-	mole_test_fake_command spctl 'exit 3'
+	# The original passes the scan; only the slimmed copy is rejected.
+	mole_test_fake_command spctl 'case "$*" in *"/apps/Fixture.app") exit 0 ;; esac; exit 3'
 
 	run slim_env MOLE_SLIM_TEST_HOST_ARM64=1 /bin/bash -c '
 		source "$1"
@@ -307,12 +557,12 @@ PLIST
 		slim_preflight || exit 9
 		collect_slim_candidates || exit 8
 		slim_one_app 0 || exit 7
-		echo "slimmed=$total_slimmed failed=${SLIM_FAILURES[*]}"
+		echo "slimmed=$total_slimmed failed=${SLIM_FAILED_NAMES[*]} (${SLIM_FAILED_REASONS[*]})"
 		ls "$SLIM_WORK_DIR"
 	' bash "$PROJECT_ROOT/bin/slim.sh"
 
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"slimmed=0 failed=Fixture.app (Gatekeeper check failed)"* ]] || return 1
+	[[ "$output" == *"slimmed=0 failed=Fixture (Gatekeeper check failed)"* ]] || return 1
 	[[ "$output" != *"app."* ]] || return 1
 	[[ "$(stat -f '%i' "$app/Contents/MacOS/Fixture")" == "$before" ]] || return 1
 	[[ "$(lipo -archs "$app/Contents/MacOS/Fixture")" == *x86_64* ]] || return 1
@@ -370,12 +620,12 @@ exec /usr/bin/codesign \"\$@\""
 		slim_preflight || exit 9
 		collect_slim_candidates || exit 8
 		slim_one_app 0 || exit 7
-		echo "slimmed=$total_slimmed failed=${SLIM_FAILURES[*]}"
+		echo "slimmed=$total_slimmed failed=${SLIM_FAILED_NAMES[*]} (${SLIM_FAILED_REASONS[*]})"
 		ls "$SLIM_WORK_DIR"
 	' bash "$PROJECT_ROOT/bin/slim.sh"
 
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"slimmed=0 failed=Fixture.app (code signature already invalid)"* ]] || return 1
+	[[ "$output" == *"slimmed=0 failed=Fixture (code signature already invalid)"* ]] || return 1
 	[[ "$output" != *"app."* ]] || return 1
 	[[ "$(lipo -archs "$app/Contents/MacOS/Fixture")" == *x86_64* ]] || return 1
 	[ -z "$(ls -A "$TRASH_DIR")" ]
@@ -471,12 +721,12 @@ exec /usr/bin/codesign \"\$@\""
 		collect_slim_candidates || exit 8
 		echo "listed=${#SLIM_APP_PATHS[@]}"
 		slim_one_app 0 || exit 7
-		echo "failed=${SLIM_FAILURES[*]}"
+		echo "failed=${SLIM_FAILED_NAMES[*]} (${SLIM_FAILED_REASONS[*]})"
 	' bash "$PROJECT_ROOT/bin/slim.sh"
 
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"listed=1"* ]] || return 1
-	[[ "$output" == *"failed=Fixture.app (running, quit it and retry)"* ]] || return 1
+	[[ "$output" == *"failed=Fixture (still running)"* ]] || return 1
 	[[ "$(lipo -archs "$app/Contents/MacOS/Fixture")" == *x86_64* ]] || return 1
 	[ -z "$(ls -A "$TRASH_DIR")" ]
 }
@@ -497,11 +747,62 @@ exec /usr/bin/codesign \"\$@\""
 		slim_app_is_running() { [[ -e "$started_marker" ]]; }
 		slim_verify_copy() { touch "$started_marker"; }
 		slim_one_app 0 || exit 7
-		echo "failed=${SLIM_FAILURES[*]}"
+		echo "failed=${SLIM_FAILED_NAMES[*]} (${SLIM_FAILED_REASONS[*]})"
 	' bash "$PROJECT_ROOT/bin/slim.sh" "$BATS_TEST_TMPDIR/started"
 
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"failed=Fixture.app (running, quit it and retry)"* ]] || return 1
+	[[ "$output" == *"failed=Fixture (still running)"* ]] || return 1
 	[[ "$(lipo -archs "$app/Contents/MacOS/Fixture")" == *x86_64* ]] || return 1
 	[ -z "$(ls -A "$TRASH_DIR")" ]
+}
+
+@test "slim confirmation requires a successful Enter read" {
+	run slim_env /bin/bash -c '
+		source "$1"
+		SLIM_APP_PATHS=("$2/Fixture.app")
+		SLIM_APP_NAMES=(Fixture)
+		SLIM_APP_BYTES=(1024)
+		if confirm_slim_selection 0 </dev/null; then echo EOF_CONFIRMED; fi
+		if confirm_slim_selection 0 < <(printf "\n"); then echo ENTER_CONFIRMED; fi
+	' bash "$PROJECT_ROOT/bin/slim.sh" "$BATS_TEST_TMPDIR"
+	[ "$status" -eq 0 ]
+	[[ "$output" != *EOF_CONFIRMED* ]] || return 1
+	[[ "$output" == *ENTER_CONFIRMED* ]]
+}
+
+@test "slim summary lists slimmed apps and groups kept apps by reason" {
+	run slim_env /bin/bash -c '
+		source "$1"
+		SLIM_DONE_NAMES=(Claude Sketch NetNewsWire MiaoYan)
+		total_slimmed=4
+		total_freed_bytes=1048576
+		SLIM_FAILED_NAMES=(Stash ScreenFlow Kaku)
+		SLIM_FAILED_REASONS=("still running" "code signature check failed" "still running")
+		total_failed=3
+		show_slim_summary | sed $'"'"'s/\033\\[[0-9;]*m//g'"'"'
+	' bash "$PROJECT_ROOT/bin/slim.sh"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"Slim incomplete"* ]] || return 1
+	[[ "$output" == *"Slimmed 4 apps, freed 1.0MB: Claude, Sketch, NetNewsWire"* ]] || return 1
+	[[ "$output" == *$'\nMiaoYan\n'* ]] || return 1
+	[[ "$output" == *"Still running: Stash, Kaku"* ]] || return 1
+	[[ "$output" == *"Code signature check failed: ScreenFlow"* ]] || return 1
+	[[ "$output" != *".app"* ]] || return 1
+	[ "$(grep -c "Still running" <<< "$output")" -eq 1 ]
+}
+
+@test "slim slice output never follows a pre-existing suffix symlink" {
+	[[ "$SLIM_HAVE_FAT_TOOLCHAIN" == "1" ]] || skip "needs clang and a developer directory"
+	local file="$BATS_TEST_TMPDIR/thin-me" outside="$BATS_TEST_TMPDIR/outside"
+	cp "$FIXTURE_BIN_DIR/fat-exe" "$file"
+	printf 'keep outside' > "$outside"
+	ln -s "$outside" "$file.mole-slim"
+	run slim_env /bin/bash -c '
+		source "$1"
+		slim_thin_file "$2"
+	' bash "$PROJECT_ROOT/bin/slim.sh" "$file"
+	[[ "$(cat "$outside")" == "keep outside" ]] || return 1
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[ -L "$file.mole-slim" ]
+	[[ "$(lipo -archs "$file")" == arm64 ]]
 }

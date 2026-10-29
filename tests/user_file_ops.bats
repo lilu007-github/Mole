@@ -193,6 +193,83 @@ EOF
     [ "$status" -eq 0 ]
 }
 
+@test "Darwin temp root prune takes only stale Mole registries and temp entries" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/base.sh"
+
+darwin_root="$HOME/darwin-T"
+other_root="$HOME/user-folder"
+rm -rf "$darwin_root" "$other_root"
+mkdir -p "$darwin_root" "$other_root"
+_mole_darwin_user_temp_dir() { printf '%s/\n' "$darwin_root"; }
+
+dead_pid=99990
+while ps -p "$dead_pid" > /dev/null 2>&1; do dead_pid=$((dead_pid + 1)); done
+fresh_dead_pid=$((dead_pid + 1))
+while ps -p "$fresh_dead_pid" > /dev/null 2>&1; do fresh_dead_pid=$((fresh_dead_pid + 1)); done
+
+old=()
+for name in "mole.registry.$dead_pid" "mole.registry.$$" mole.AbC123 mole.hard01 \
+    mole.probe.Ab12Cd mole.Ab12Cde mole-checksums.Ab12Cd notes.txt; do
+    touch "$darwin_root/$name"
+    old+=("$darwin_root/$name")
+done
+ln "$darwin_root/mole.hard01" "$darwin_root/hard-link"
+mkdir -p "$darwin_root/mole.Empty1" "$darwin_root/mole.Full01" "$darwin_root/mole.OwnDir"
+touch "$darwin_root/mole.Owned1"
+old+=("$darwin_root/mole.Owned1" "$darwin_root/mole.OwnDir")
+printf '%s\n' "$darwin_root/mole.Owned1" "$darwin_root/mole.OwnDir" > "$darwin_root/mole.registry.$$"
+ln -s "$other_root/mole.Other1" "$darwin_root/mole.Link01"
+touch -h -t 202001010101 "$darwin_root/mole.Link01"
+touch "$darwin_root/mole.Full01/kept"
+touch "$darwin_root/mole.Fresh1" "$darwin_root/mole.registry.$fresh_dead_pid" "$other_root/mole.Other1"
+touch -t 202001010101 "${old[@]}" "$darwin_root/mole.Empty1" "$darwin_root/mole.Full01" "$other_root/mole.Other1"
+
+prune_stale_mole_tmpdir_leftovers "$other_root"
+[[ -e "$other_root/mole.Other1" ]] || exit 1
+
+prune_stale_mole_tmpdir_leftovers "$darwin_root"
+for gone in "mole.registry.$dead_pid" mole.AbC123 mole.Empty1; do
+    [[ ! -e "$darwin_root/$gone" ]] || { echo "kept $gone"; exit 1; }
+done
+for kept in "mole.registry.$$" mole.hard01 mole.probe.Ab12Cd mole.Ab12Cde \
+    mole-checksums.Ab12Cd notes.txt mole.Full01/kept mole.Fresh1 "mole.registry.$fresh_dead_pid" \
+    mole.Owned1 mole.OwnDir mole.Link01; do
+    [[ -e "$darwin_root/$kept" ]] || { echo "removed $kept"; exit 1; }
+done
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "Darwin temp root prune runs from temp root setup and keeps everything when ps fails" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/base.sh"
+
+darwin_root="$HOME/darwin-T-setup"
+rm -rf "$darwin_root"
+mkdir -p "$darwin_root"
+_mole_darwin_user_temp_dir() { printf '%s/\n' "$darwin_root"; }
+touch "$darwin_root/mole.Stale1" "$darwin_root/mole.registry.99999999"
+touch -t 202001010101 "$darwin_root/mole.Stale1" "$darwin_root/mole.registry.99999999"
+
+ps() { return 1; }
+prune_stale_mole_tmpdir_leftovers "$darwin_root"
+echo "survived ps failure"
+[[ -e "$darwin_root/mole.Stale1" && -e "$darwin_root/mole.registry.99999999" ]] || exit 1
+unset -f ps
+
+unset MOLE_RESOLVED_TMPDIR MOLE_TEMP_REGISTRY_FILE
+TMPDIR="$darwin_root" ensure_mole_temp_root
+[[ ! -e "$darwin_root/mole.Stale1" && ! -e "$darwin_root/mole.registry.99999999" ]] || exit 1
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"survived ps failure"* ]]
+}
+
 @test "prepare_mole_tmpdir falls back to /tmp when TMPDIR and invoking home are unavailable" {
     result=$(env HOME="$HOME" TMPDIR="/var/empty" /bin/bash -c "
         source '$PROJECT_ROOT/lib/core/base.sh'
@@ -368,4 +445,25 @@ printf 'recreated-without-repeat-setup\n'
 EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"recreated-without-repeat-setup"* ]]
+}
+
+@test "Bats helper isolates inherited temp roots and registries" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" BATS_FILE_TMPDIR="$BATS_TEST_TMPDIR/isolated-file" \
+        TMPDIR="$BATS_TEST_TMPDIR/ambient" MOLE_RESOLVED_TMPDIR="$BATS_TEST_TMPDIR/ambient" \
+        MOLE_TEMP_REGISTRY_FILE="$BATS_TEST_TMPDIR/ambient/mole.registry.parent" /bin/bash <<'EOF'
+set -euo pipefail
+mkdir -p "$TMPDIR" "$BATS_FILE_TMPDIR"
+ambient="$TMPDIR"
+printf sentinel > "$MOLE_TEMP_REGISTRY_FILE"
+source "$PROJECT_ROOT/tests/helpers/common.bash"
+source "$PROJECT_ROOT/lib/core/base.sh"
+temp_file=$(create_temp_file)
+[[ "$temp_file" == "$BATS_FILE_TMPDIR/"* ]] || exit 1
+[[ "${MOLE_TEMP_REGISTRY_FILE:-}" != "$ambient/"* ]] || exit 1
+[[ "$(cat "$ambient/mole.registry.parent")" == sentinel ]] || exit 1
+[[ -f "$temp_file" ]] || exit 1
+printf 'PASS\n'
+EOF
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *PASS* ]]
 }
